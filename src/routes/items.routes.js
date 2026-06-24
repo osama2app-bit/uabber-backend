@@ -1,96 +1,106 @@
 const express = require('express');
-const prisma = require('../config/prisma');
-const { auth, adminOnly } = require('../middleware/auth');
-const { fileUrl } = require('../utils/upload');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+
+const prisma = require('../config/prisma');
+const cloudinary = require('../config/cloudinary');
+const { auth, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
 
-function multiUpload() {
-  ['images', 'audio'].forEach((folder) => {
-    fs.mkdirSync(path.join(__dirname, '../../uploads', folder), {
-      recursive: true,
-    });
-  });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024,
+  },
+}).fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'audio', maxCount: 1 },
+]);
 
-  const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(
-        null,
-        path.join(
-          __dirname,
-          '../../uploads',
-          file.fieldname === 'audio' ? 'audio' : 'images'
-        )
-      );
-    },
-    filename: (_, file, cb) => {
-      cb(
-        null,
-        `${Date.now()}-${Math.round(Math.random() * 1e9)}${path
-          .extname(file.originalname)
-          .toLowerCase()}`
-      );
-    },
-  });
+function uploadToCloudinary(file, folder, resourceType = 'auto') {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
 
-  return multer({
-    storage,
-    limits: {
-      fileSize: 20 * 1024 * 1024,
-    },
-  }).fields([
-    { name: 'image', maxCount: 1 },
-    { name: 'audio', maxCount: 1 },
-  ]);
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: resourceType,
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        return resolve(result.secure_url);
+      }
+    );
+
+    stream.end(file.buffer);
+  });
 }
 
 router.get('/', async (req, res) => {
-  const items = await prisma.item.findMany({
-    where: { isActive: true },
-    orderBy: { id: 'desc' },
-  });
+  try {
+    const items = await prisma.item.findMany({
+      where: { isActive: true },
+      orderBy: { id: 'desc' },
+    });
 
-  res.json(items);
+    res.json(items);
+  } catch (error) {
+    console.error('GET ITEMS ERROR:', error);
+    res.status(500).json({ message: 'Failed to load items' });
+  }
 });
 
 router.get('/category/:categoryId', async (req, res) => {
-  const items = await prisma.item.findMany({
-    where: {
-      categoryId: Number(req.params.categoryId),
-      isActive: true,
-    },
-    orderBy: { id: 'desc' },
-  });
+  try {
+    const items = await prisma.item.findMany({
+      where: {
+        categoryId: Number(req.params.categoryId),
+        isActive: true,
+      },
+      orderBy: { id: 'desc' },
+    });
 
-  res.json(items);
+    res.json(items);
+  } catch (error) {
+    console.error('GET CATEGORY ITEMS ERROR:', error);
+    res.status(500).json({ message: 'Failed to load category items' });
+  }
 });
 
 router.get('/admin/all', auth, adminOnly, async (req, res) => {
-  const items = await prisma.item.findMany({
-    orderBy: { id: 'desc' },
-    include: { category: true },
-  });
+  try {
+    const items = await prisma.item.findMany({
+      orderBy: { id: 'desc' },
+      include: { category: true },
+    });
 
-  res.json(items);
+    res.json(items);
+  } catch (error) {
+    console.error('GET ADMIN ITEMS ERROR:', error);
+    res.status(500).json({ message: 'Failed to load admin items' });
+  }
 });
 
-router.post('/', auth, adminOnly, multiUpload(), async (req, res) => {
+router.post('/', auth, adminOnly, upload, async (req, res) => {
   try {
     const { categoryId, title, speechText } = req.body;
+    const imageFile = req.files?.image?.[0];
+    const audioFile = req.files?.audio?.[0];
 
-    if (!categoryId || !title || !speechText || !req.files?.image?.[0]) {
+    if (!categoryId || !title || !speechText || !imageFile) {
       return res.status(400).json({
         message: 'categoryId, title, speechText, image required',
       });
     }
 
-    const imageUrl = fileUrl(req, 'images', req.files.image[0]);
+    const imageUrl = await uploadToCloudinary(
+      imageFile,
+      'uabber/items/images',
+      'image'
+    );
 
-    const audioUrl = req.files?.audio?.[0]
-      ? fileUrl(req, 'audio', req.files.audio[0])
+    const audioUrl = audioFile
+      ? await uploadToCloudinary(audioFile, 'uabber/items/audio', 'auto')
       : null;
 
     const item = await prisma.item.create({
@@ -106,7 +116,6 @@ router.post('/', auth, adminOnly, multiUpload(), async (req, res) => {
     res.json(item);
   } catch (error) {
     console.error('CREATE ITEM ERROR:', error);
-
     res.status(500).json({
       message: 'Failed to create item',
       error: error.message,
@@ -114,9 +123,11 @@ router.post('/', auth, adminOnly, multiUpload(), async (req, res) => {
   }
 });
 
-router.put('/:id', auth, adminOnly, multiUpload(), async (req, res) => {
+router.put('/:id', auth, adminOnly, upload, async (req, res) => {
   try {
     const data = {};
+    const imageFile = req.files?.image?.[0];
+    const audioFile = req.files?.audio?.[0];
 
     if (req.body.categoryId !== undefined) {
       data.categoryId = Number(req.body.categoryId);
@@ -131,15 +142,23 @@ router.put('/:id', auth, adminOnly, multiUpload(), async (req, res) => {
     }
 
     if (req.body.isActive !== undefined) {
-      data.isActive = req.body.isActive === 'true';
+      data.isActive = req.body.isActive === true || req.body.isActive === 'true';
     }
 
-    if (req.files?.image?.[0]) {
-      data.imageUrl = fileUrl(req, 'images', req.files.image[0]);
+    if (imageFile) {
+      data.imageUrl = await uploadToCloudinary(
+        imageFile,
+        'uabber/items/images',
+        'image'
+      );
     }
 
-    if (req.files?.audio?.[0]) {
-      data.audioUrl = fileUrl(req, 'audio', req.files.audio[0]);
+    if (audioFile) {
+      data.audioUrl = await uploadToCloudinary(
+        audioFile,
+        'uabber/items/audio',
+        'auto'
+      );
     }
 
     const item = await prisma.item.update({
@@ -152,7 +171,6 @@ router.put('/:id', auth, adminOnly, multiUpload(), async (req, res) => {
     res.json(item);
   } catch (error) {
     console.error('UPDATE ITEM ERROR:', error);
-
     res.status(500).json({
       message: 'Failed to update item',
       error: error.message,
@@ -161,13 +179,18 @@ router.put('/:id', auth, adminOnly, multiUpload(), async (req, res) => {
 });
 
 router.delete('/:id', auth, adminOnly, async (req, res) => {
-  await prisma.item.delete({
-    where: {
-      id: Number(req.params.id),
-    },
-  });
+  try {
+    await prisma.item.delete({
+      where: {
+        id: Number(req.params.id),
+      },
+    });
 
-  res.json({ ok: true });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('DELETE ITEM ERROR:', error);
+    res.status(500).json({ message: 'Failed to delete item' });
+  }
 });
 
 module.exports = router;
