@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: uabber_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: uabber_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - uabber_pg_data:/var/lib/postgresql/data
+volumes:
+  uabber_pg_data:
