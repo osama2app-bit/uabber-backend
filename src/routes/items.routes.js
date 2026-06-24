@@ -47,7 +47,7 @@ function multiUpload() {
   ]);
 }
 
-router.get('/', auth, async (req, res) => {
+router.get('/', async (req, res) => {
   const items = await prisma.item.findMany({
     where: { isActive: true },
     orderBy: { id: 'desc' },
@@ -56,7 +56,7 @@ router.get('/', auth, async (req, res) => {
   res.json(items);
 });
 
-router.get('/category/:categoryId', auth, async (req, res) => {
+router.get('/category/:categoryId', async (req, res) => {
   const items = await prisma.item.findMany({
     where: {
       categoryId: Number(req.params.categoryId),
