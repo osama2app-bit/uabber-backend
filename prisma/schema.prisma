@@ -64,7 +64,22 @@ model Item {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  category   Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  variants   ItemVariant[]
+}
+
+model ItemVariant {
+  id         Int      @id @default(autoincrement())
+  itemId     Int
+  title      String
+  speechText String
+  imageUrl   String
+  audioUrl   String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  item       Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
 }
 
 model PaymentRequest {

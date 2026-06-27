@@ -12,10 +12,7 @@ const upload = multer({
   limits: {
     fileSize: 20 * 1024 * 1024,
   },
-}).fields([
-  { name: 'image', maxCount: 1 },
-  { name: 'audio', maxCount: 1 },
-]);
+}).any();
 
 function uploadToCloudinary(file, folder, resourceType = 'auto') {
   return new Promise((resolve, reject) => {
@@ -36,11 +33,32 @@ function uploadToCloudinary(file, folder, resourceType = 'auto') {
   });
 }
 
+function getFile(req, fieldName) {
+  return (req.files || []).find((file) => file.fieldname === fieldName);
+}
+
+function parseVariants(body) {
+  if (!body.variants) return [];
+
+  try {
+    const parsed = JSON.parse(body.variants);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 router.get('/', async (req, res) => {
   try {
     const items = await prisma.item.findMany({
       where: { isActive: true },
       orderBy: { id: 'desc' },
+      include: {
+        variants: {
+          where: { isActive: true },
+          orderBy: { id: 'asc' },
+        },
+      },
     });
 
     res.json(items);
@@ -58,6 +76,12 @@ router.get('/category/:categoryId', async (req, res) => {
         isActive: true,
       },
       orderBy: { id: 'desc' },
+      include: {
+        variants: {
+          where: { isActive: true },
+          orderBy: { id: 'asc' },
+        },
+      },
     });
 
     res.json(items);
@@ -71,7 +95,12 @@ router.get('/admin/all', auth, adminOnly, async (req, res) => {
   try {
     const items = await prisma.item.findMany({
       orderBy: { id: 'desc' },
-      include: { category: true },
+      include: {
+        category: true,
+        variants: {
+          orderBy: { id: 'asc' },
+        },
+      },
     });
 
     res.json(items);
@@ -84,8 +113,8 @@ router.get('/admin/all', auth, adminOnly, async (req, res) => {
 router.post('/', auth, adminOnly, upload, async (req, res) => {
   try {
     const { categoryId, title, speechText } = req.body;
-    const imageFile = req.files?.image?.[0];
-    const audioFile = req.files?.audio?.[0];
+    const imageFile = getFile(req, 'image');
+    const audioFile = getFile(req, 'audio');
 
     if (!categoryId || !title || !speechText || !imageFile) {
       return res.status(400).json({
@@ -113,7 +142,52 @@ router.post('/', auth, adminOnly, upload, async (req, res) => {
       },
     });
 
-    res.json(item);
+    const variants = parseVariants(req.body);
+
+    for (let i = 0; i < variants.length; i++) {
+      const variant = variants[i];
+      const variantImageFile = getFile(req, variant.imageField || `variantImage_${i}`);
+      const variantAudioFile = getFile(req, variant.audioField || `variantAudio_${i}`);
+
+      if (!variant.title || !variant.speechText || !variantImageFile) {
+        continue;
+      }
+
+      const variantImageUrl = await uploadToCloudinary(
+        variantImageFile,
+        'uabber/items/variants/images',
+        'image'
+      );
+
+      const variantAudioUrl = variantAudioFile
+        ? await uploadToCloudinary(
+            variantAudioFile,
+            'uabber/items/variants/audio',
+            'auto'
+          )
+        : null;
+
+      await prisma.itemVariant.create({
+        data: {
+          itemId: item.id,
+          title: variant.title,
+          speechText: variant.speechText,
+          imageUrl: variantImageUrl,
+          audioUrl: variantAudioUrl,
+        },
+      });
+    }
+
+    const createdItem = await prisma.item.findUnique({
+      where: { id: item.id },
+      include: {
+        variants: {
+          orderBy: { id: 'asc' },
+        },
+      },
+    });
+
+    res.json(createdItem);
   } catch (error) {
     console.error('CREATE ITEM ERROR:', error);
     res.status(500).json({
@@ -126,8 +200,8 @@ router.post('/', auth, adminOnly, upload, async (req, res) => {
 router.put('/:id', auth, adminOnly, upload, async (req, res) => {
   try {
     const data = {};
-    const imageFile = req.files?.image?.[0];
-    const audioFile = req.files?.audio?.[0];
+    const imageFile = getFile(req, 'image');
+    const audioFile = getFile(req, 'audio');
 
     if (req.body.categoryId !== undefined) {
       data.categoryId = Number(req.body.categoryId);
@@ -166,6 +240,11 @@ router.put('/:id', auth, adminOnly, upload, async (req, res) => {
         id: Number(req.params.id),
       },
       data,
+      include: {
+        variants: {
+          orderBy: { id: 'asc' },
+        },
+      },
     });
 
     res.json(item);
