@@ -24,26 +24,23 @@ async function main() {
   });
 
   const categories = [
-    { id: 1, name: 'الفواكه' },
-    { id: 2, name: 'الخضروات' },
-    { id: 3, name: 'طعام المطعم' },
-    { id: 4, name: 'الفطور' },
-    { id: 5, name: 'الملابس' },
-    { id: 6, name: 'الألعاب والترفيه' },
-    { id: 7, name: 'الأنشطة والهوايات' },
-    { id: 8, name: 'احتياجاتي الأساسية' },
-    { id: 9, name: 'السوبر ماركت' },
+    'الفواكه',
+    'الخضروات',
+    'طعام المطعم',
+    'الفطور',
+    'الملابس',
+    'الألعاب والترفيه',
+    'الأنشطة والهوايات',
+    'احتياجاتي الأساسية',
+    'السوبر ماركت',
   ];
 
-  for (const category of categories) {
+  for (const name of categories) {
     await prisma.category.upsert({
-      where: {
-        id: category.id,
-      },
+      where: { name },
       update: {},
       create: {
-        id: category.id,
-        name: category.name,
+        name,
         isActive: true,
       },
     });
