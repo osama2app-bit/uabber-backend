@@ -199,6 +199,7 @@ router.post('/', auth, adminOnly, upload, async (req, res) => {
 
 router.put('/:id', auth, adminOnly, upload, async (req, res) => {
   try {
+    const itemId = Number(req.params.id);
     const data = {};
     const imageFile = getFile(req, 'image');
     const audioFile = getFile(req, 'audio');
@@ -235,36 +236,27 @@ router.put('/:id', auth, adminOnly, upload, async (req, res) => {
       );
     }
 
-    const itemId = Number(req.params.id);
-
     await prisma.item.update({
-      where: {
-        id: itemId,
-      },
+      where: { id: itemId },
       data,
     });
 
-    // لا نلمس التفرعات إلا إذا أرسلها التطبيق.
-    // هذا يحافظ على toggleItem بدون حذف التفرعات بالغلط.
     if (req.body.variants !== undefined) {
       const variants = parseVariants(req.body);
-      const keepVariantIds = [];
+      const keptVariantIds = [];
 
       for (let i = 0; i < variants.length; i++) {
         const variant = variants[i];
+        if (!variant.title || !variant.speechText) continue;
+
         const variantImageFile = getFile(req, variant.imageField || `variantImage_${i}`);
         const variantAudioFile = getFile(req, variant.audioField || `variantAudio_${i}`);
 
-        if (!variant.title || !variant.speechText) continue;
-
-        const variantData = {
-          title: variant.title,
-          speechText: variant.speechText,
-          isActive: true,
-        };
+        let imageUrl = variant.currentImageUrl || null;
+        let audioUrl;
 
         if (variantImageFile) {
-          variantData.imageUrl = await uploadToCloudinary(
+          imageUrl = await uploadToCloudinary(
             variantImageFile,
             'uabber/items/variants/images',
             'image'
@@ -272,7 +264,7 @@ router.put('/:id', auth, adminOnly, upload, async (req, res) => {
         }
 
         if (variantAudioFile) {
-          variantData.audioUrl = await uploadToCloudinary(
+          audioUrl = await uploadToCloudinary(
             variantAudioFile,
             'uabber/items/variants/audio',
             'auto'
@@ -280,28 +272,43 @@ router.put('/:id', auth, adminOnly, upload, async (req, res) => {
         }
 
         if (variant.id) {
-          const updatedVariant = await prisma.itemVariant.update({
-            where: { id: Number(variant.id) },
-            data: variantData,
-          });
-          keepVariantIds.push(updatedVariant.id);
-        } else {
-          if (!variantImageFile) continue;
+          const updateData = {
+            title: variant.title,
+            speechText: variant.speechText,
+          };
 
-          const createdVariant = await prisma.itemVariant.create({
+          if (imageUrl) updateData.imageUrl = imageUrl;
+          if (audioUrl) updateData.audioUrl = audioUrl;
+
+          const updated = await prisma.itemVariant.update({
+            where: { id: Number(variant.id) },
+            data: updateData,
+          });
+
+          keptVariantIds.push(updated.id);
+        } else {
+          if (!imageUrl) continue;
+
+          const created = await prisma.itemVariant.create({
             data: {
               itemId,
-              ...variantData,
+              title: variant.title,
+              speechText: variant.speechText,
+              imageUrl,
+              ...(audioUrl ? { audioUrl } : {}),
             },
           });
-          keepVariantIds.push(createdVariant.id);
+
+          keptVariantIds.push(created.id);
         }
       }
 
       await prisma.itemVariant.deleteMany({
         where: {
           itemId,
-          ...(keepVariantIds.length > 0 ? { id: { notIn: keepVariantIds } } : {}),
+          ...(keptVariantIds.length > 0
+            ? { id: { notIn: keptVariantIds } }
+            : {}),
         },
       });
     }
