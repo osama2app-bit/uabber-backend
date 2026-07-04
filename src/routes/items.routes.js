@@ -1,36 +1,33 @@
 const express = require('express');
 const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const prisma = require('../config/prisma');
-const cloudinary = require('../config/cloudinary');
 const { auth, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 20 * 1024 * 1024,
+const uploadDir = path.join(__dirname, '../../uploads/items');
+fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
   },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
 }).any();
 
-function uploadToCloudinary(file, folder, resourceType = 'auto') {
-  return new Promise((resolve, reject) => {
-    if (!file) return resolve(null);
-
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        resource_type: resourceType,
-      },
-      (error, result) => {
-        if (error) return reject(error);
-        return resolve(result.secure_url);
-      }
-    );
-
-    stream.end(file.buffer);
-  });
+function fileUrl(req, file) {
+  if (!file) return null;
+  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+  return `${base}/uploads/items/${file.filename}`;
 }
 
 function getFile(req, fieldName) {
@@ -38,14 +35,43 @@ function getFile(req, fieldName) {
 }
 
 function parseVariants(body) {
-  if (!body.variants) return [];
-
+  if (body.variants === undefined || body.variants === null || body.variants === '') return [];
   try {
     const parsed = JSON.parse(body.variants);
     return Array.isArray(parsed) ? parsed : [];
   } catch (_) {
     return [];
   }
+}
+
+async function buildVariantCreateData(req, itemId, variants) {
+  const data = [];
+
+  for (let i = 0; i < variants.length; i++) {
+    const variant = variants[i];
+    const title = (variant.title || '').toString().trim();
+    const speechText = (variant.speechText || '').toString().trim();
+    if (!title || !speechText) continue;
+
+    const imageFile = getFile(req, variant.imageField || `variantImage_${i}`);
+    const audioFile = getFile(req, variant.audioField || `variantAudio_${i}`);
+
+    const imageUrl = imageFile ? fileUrl(req, imageFile) : variant.currentImageUrl;
+    const audioUrl = audioFile ? fileUrl(req, audioFile) : variant.currentAudioUrl || null;
+
+    if (!imageUrl) continue;
+
+    data.push({
+      itemId,
+      title,
+      speechText,
+      imageUrl,
+      audioUrl,
+      isActive: variant.isActive === false || variant.isActive === 'false' ? false : true,
+    });
+  }
+
+  return data;
 }
 
 router.get('/', async (req, res) => {
@@ -116,230 +142,94 @@ router.post('/', auth, adminOnly, upload, async (req, res) => {
     const imageFile = getFile(req, 'image');
     const audioFile = getFile(req, 'audio');
 
-    if (!categoryId || !title || !speechText || !imageFile) {
+    const parsedCategoryId = Number(categoryId);
+    if (!parsedCategoryId || !title || !speechText || !imageFile) {
       return res.status(400).json({
         message: 'categoryId, title, speechText, image required',
       });
     }
 
-    const imageUrl = await uploadToCloudinary(
-      imageFile,
-      'uabber/items/images',
-      'image'
-    );
-
-    const audioUrl = audioFile
-      ? await uploadToCloudinary(audioFile, 'uabber/items/audio', 'auto')
-      : null;
+    const category = await prisma.category.findUnique({ where: { id: parsedCategoryId } });
+    if (!category) {
+      return res.status(400).json({ message: 'Category not found' });
+    }
 
     const item = await prisma.item.create({
       data: {
-        categoryId: Number(categoryId),
-        title,
-        speechText,
-        imageUrl,
-        audioUrl,
+        categoryId: parsedCategoryId,
+        title: title.toString().trim(),
+        speechText: speechText.toString().trim(),
+        imageUrl: fileUrl(req, imageFile),
+        audioUrl: audioFile ? fileUrl(req, audioFile) : null,
       },
     });
 
     const variants = parseVariants(req.body);
-
-    for (let i = 0; i < variants.length; i++) {
-      const variant = variants[i];
-      const variantImageFile = getFile(req, variant.imageField || `variantImage_${i}`);
-      const variantAudioFile = getFile(req, variant.audioField || `variantAudio_${i}`);
-
-      if (!variant.title || !variant.speechText || !variantImageFile) {
-        continue;
-      }
-
-      const variantImageUrl = await uploadToCloudinary(
-        variantImageFile,
-        'uabber/items/variants/images',
-        'image'
-      );
-
-      const variantAudioUrl = variantAudioFile
-        ? await uploadToCloudinary(
-            variantAudioFile,
-            'uabber/items/variants/audio',
-            'auto'
-          )
-        : null;
-
-      await prisma.itemVariant.create({
-        data: {
-          itemId: item.id,
-          title: variant.title,
-          speechText: variant.speechText,
-          imageUrl: variantImageUrl,
-          audioUrl: variantAudioUrl,
-        },
-      });
+    const variantData = await buildVariantCreateData(req, item.id, variants);
+    if (variantData.length > 0) {
+      await prisma.itemVariant.createMany({ data: variantData });
     }
 
     const createdItem = await prisma.item.findUnique({
       where: { id: item.id },
-      include: {
-        variants: {
-          orderBy: { id: 'asc' },
-        },
-      },
+      include: { variants: { orderBy: { id: 'asc' } } },
     });
 
     res.json(createdItem);
   } catch (error) {
     console.error('CREATE ITEM ERROR:', error);
-    res.status(500).json({
-      message: 'Failed to create item',
-      error: error.message,
-    });
+    res.status(500).json({ message: 'Failed to create item', error: error.message });
   }
 });
 
 router.put('/:id', auth, adminOnly, upload, async (req, res) => {
   try {
     const itemId = Number(req.params.id);
+    if (!itemId) return res.status(400).json({ message: 'Invalid item id' });
+
     const data = {};
     const imageFile = getFile(req, 'image');
     const audioFile = getFile(req, 'audio');
 
     if (req.body.categoryId !== undefined) {
-      data.categoryId = Number(req.body.categoryId);
+      const parsedCategoryId = Number(req.body.categoryId);
+      const category = await prisma.category.findUnique({ where: { id: parsedCategoryId } });
+      if (!category) return res.status(400).json({ message: 'Category not found' });
+      data.categoryId = parsedCategoryId;
     }
 
-    if (req.body.title !== undefined) {
-      data.title = req.body.title;
-    }
+    if (req.body.title !== undefined) data.title = req.body.title.toString().trim();
+    if (req.body.speechText !== undefined) data.speechText = req.body.speechText.toString().trim();
+    if (req.body.isActive !== undefined) data.isActive = req.body.isActive === true || req.body.isActive === 'true';
+    if (imageFile) data.imageUrl = fileUrl(req, imageFile);
+    if (audioFile) data.audioUrl = fileUrl(req, audioFile);
 
-    if (req.body.speechText !== undefined) {
-      data.speechText = req.body.speechText;
-    }
-
-    if (req.body.isActive !== undefined) {
-      data.isActive = req.body.isActive === true || req.body.isActive === 'true';
-    }
-
-    if (imageFile) {
-      data.imageUrl = await uploadToCloudinary(
-        imageFile,
-        'uabber/items/images',
-        'image'
-      );
-    }
-
-    if (audioFile) {
-      data.audioUrl = await uploadToCloudinary(
-        audioFile,
-        'uabber/items/audio',
-        'auto'
-      );
-    }
-
-    await prisma.item.update({
-      where: { id: itemId },
-      data,
-    });
+    await prisma.item.update({ where: { id: itemId }, data });
 
     if (req.body.variants !== undefined) {
       const variants = parseVariants(req.body);
-      const keptVariantIds = [];
-
-      for (let i = 0; i < variants.length; i++) {
-        const variant = variants[i];
-        if (!variant.title || !variant.speechText) continue;
-
-        const variantImageFile = getFile(req, variant.imageField || `variantImage_${i}`);
-        const variantAudioFile = getFile(req, variant.audioField || `variantAudio_${i}`);
-
-        let imageUrl = variant.currentImageUrl || null;
-        let audioUrl;
-
-        if (variantImageFile) {
-          imageUrl = await uploadToCloudinary(
-            variantImageFile,
-            'uabber/items/variants/images',
-            'image'
-          );
-        }
-
-        if (variantAudioFile) {
-          audioUrl = await uploadToCloudinary(
-            variantAudioFile,
-            'uabber/items/variants/audio',
-            'auto'
-          );
-        }
-
-        if (variant.id) {
-          const updateData = {
-            title: variant.title,
-            speechText: variant.speechText,
-          };
-
-          if (imageUrl) updateData.imageUrl = imageUrl;
-          if (audioUrl) updateData.audioUrl = audioUrl;
-
-          const updated = await prisma.itemVariant.update({
-            where: { id: Number(variant.id) },
-            data: updateData,
-          });
-
-          keptVariantIds.push(updated.id);
-        } else {
-          if (!imageUrl) continue;
-
-          const created = await prisma.itemVariant.create({
-            data: {
-              itemId,
-              title: variant.title,
-              speechText: variant.speechText,
-              imageUrl,
-              ...(audioUrl ? { audioUrl } : {}),
-            },
-          });
-
-          keptVariantIds.push(created.id);
-        }
+      await prisma.itemVariant.deleteMany({ where: { itemId } });
+      const variantData = await buildVariantCreateData(req, itemId, variants);
+      if (variantData.length > 0) {
+        await prisma.itemVariant.createMany({ data: variantData });
       }
-
-      await prisma.itemVariant.deleteMany({
-        where: {
-          itemId,
-          ...(keptVariantIds.length > 0
-            ? { id: { notIn: keptVariantIds } }
-            : {}),
-        },
-      });
     }
 
     const item = await prisma.item.findUnique({
       where: { id: itemId },
-      include: {
-        variants: {
-          orderBy: { id: 'asc' },
-        },
-      },
+      include: { variants: { orderBy: { id: 'asc' } } },
     });
 
     res.json(item);
   } catch (error) {
     console.error('UPDATE ITEM ERROR:', error);
-    res.status(500).json({
-      message: 'Failed to update item',
-      error: error.message,
-    });
+    res.status(500).json({ message: 'Failed to update item', error: error.message });
   }
 });
 
 router.delete('/:id', auth, adminOnly, async (req, res) => {
   try {
-    await prisma.item.delete({
-      where: {
-        id: Number(req.params.id),
-      },
-    });
-
+    await prisma.item.delete({ where: { id: Number(req.params.id) } });
     res.json({ ok: true });
   } catch (error) {
     console.error('DELETE ITEM ERROR:', error);
