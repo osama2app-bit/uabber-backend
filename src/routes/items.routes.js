@@ -235,11 +235,79 @@ router.put('/:id', auth, adminOnly, upload, async (req, res) => {
       );
     }
 
-    const item = await prisma.item.update({
+    const itemId = Number(req.params.id);
+
+    await prisma.item.update({
       where: {
-        id: Number(req.params.id),
+        id: itemId,
       },
       data,
+    });
+
+    // لا نلمس التفرعات إلا إذا أرسلها التطبيق.
+    // هذا يحافظ على toggleItem بدون حذف التفرعات بالغلط.
+    if (req.body.variants !== undefined) {
+      const variants = parseVariants(req.body);
+      const keepVariantIds = [];
+
+      for (let i = 0; i < variants.length; i++) {
+        const variant = variants[i];
+        const variantImageFile = getFile(req, variant.imageField || `variantImage_${i}`);
+        const variantAudioFile = getFile(req, variant.audioField || `variantAudio_${i}`);
+
+        if (!variant.title || !variant.speechText) continue;
+
+        const variantData = {
+          title: variant.title,
+          speechText: variant.speechText,
+          isActive: true,
+        };
+
+        if (variantImageFile) {
+          variantData.imageUrl = await uploadToCloudinary(
+            variantImageFile,
+            'uabber/items/variants/images',
+            'image'
+          );
+        }
+
+        if (variantAudioFile) {
+          variantData.audioUrl = await uploadToCloudinary(
+            variantAudioFile,
+            'uabber/items/variants/audio',
+            'auto'
+          );
+        }
+
+        if (variant.id) {
+          const updatedVariant = await prisma.itemVariant.update({
+            where: { id: Number(variant.id) },
+            data: variantData,
+          });
+          keepVariantIds.push(updatedVariant.id);
+        } else {
+          if (!variantImageFile) continue;
+
+          const createdVariant = await prisma.itemVariant.create({
+            data: {
+              itemId,
+              ...variantData,
+            },
+          });
+          keepVariantIds.push(createdVariant.id);
+        }
+      }
+
+      await prisma.itemVariant.deleteMany({
+        where: {
+          itemId,
+          ...(keepVariantIds.length > 0 ? { id: { notIn: keepVariantIds } } : {}),
+        },
+      });
+    }
+
+    const item = await prisma.item.findUnique({
+      where: { id: itemId },
       include: {
         variants: {
           orderBy: { id: 'asc' },
