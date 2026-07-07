@@ -155,9 +155,17 @@ router.post('/', auth, adminOnly, upload, async (req, res) => {
     }
 
     const imageUrl = await uploadToCloudinary(imageFile, 'items');
-    const audioUrl = audioFile
-      ? await uploadToCloudinary(audioFile, 'audio')
-      : null;
+console.log("Cloudinary URL:", imageUrl);
+
+if (!imageUrl) {
+  return res.status(500).json({
+    message: 'Failed to upload image to Cloudinary',
+  });
+}
+
+const audioUrl = audioFile
+  ? await uploadToCloudinary(audioFile, 'audio')
+  : null;
 
     const item = await prisma.item.create({
       data: {
