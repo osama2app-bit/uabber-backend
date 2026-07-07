@@ -56,7 +56,7 @@ router.post('/', auth, adminOnly, makeUpload('images', 'image'), async (req, res
       return res.status(400).json({ message: 'Name required' });
     }
 
-    const imageUrl = fileUrl(req, 'images', req.file);
+    const imageUrl = await fileUrl(req, 'images', req.file);
 
     try {
       const category = await prisma.category.create({
