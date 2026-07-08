@@ -103,5 +103,4 @@ router.delete('/delete-account', auth, async (req, res, next) => {
     next(error);
   }
 });
-
 module.exports = router;
