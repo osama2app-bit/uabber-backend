@@ -89,4 +89,19 @@ router.get('/me', auth, async (req, res) => {
   return res.json({ user: publicUser(req.user) });
 });
 
+router.delete('/delete-account', auth, async (req, res, next) => {
+  try {
+    await prisma.user.delete({
+      where: { id: req.user.id },
+    });
+
+    return res.json({
+      ok: true,
+      message: 'Account deleted successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
