@@ -19,6 +19,8 @@ app.use('/api/items',require('./routes/items.routes'));
 app.use('/api/subscriptions',require('./routes/subscriptions.routes'));
 app.use('/api/consultations',require('./routes/consultations.routes'));
 app.use('/api/journey-steps',require('./routes/journey.routes'));
+app.use('/api/educational-content',require('./routes/educational-content.routes'));
+app.use('/api/user-customizations',require('./routes/user-customizations.routes'));
 app.use('/api/admin',require('./routes/admin.routes'));
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({message:'Server error'});});
 const port=process.env.PORT||4000;

@@ -40,6 +40,8 @@ model User {
   subscriptions   Subscription[]
   consultations   Consultation[]
   paymentRequests PaymentRequest[]
+  educationalContentUpdates EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
+  contentCustomizations UserContentCustomization[]
 }
 
 model Category {
@@ -135,3 +137,41 @@ model JourneyStep {
   updatedAt DateTime @updatedAt
 }
 
+
+
+model EducationalContentOverride {
+  id          String   @id
+  unitId      String
+  title       String
+  speechText  String
+  imageUrl    String?
+  audioUrl    String?
+  isOverride  Boolean  @default(false)
+  targetKey   String?
+  updatedById Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  updatedBy User @relation("EducationalContentUpdatedBy", fields: [updatedById], references: [id], onDelete: Cascade)
+
+  @@index([unitId])
+  @@index([targetKey])
+}
+
+model UserContentCustomization {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  contentKey String
+  title      String
+  speechText String
+  imageUrl   String?
+  audioUrl   String?
+  data       Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contentKey])
+  @@index([userId])
+}
