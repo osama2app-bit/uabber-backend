@@ -57,8 +57,18 @@ router.post('/', upload, async (req, res) => {
     const old = await prisma.userContentCustomization.findUnique({
       where: { userId_contentKey: { userId: req.user.id, contentKey } },
     });
-    const imageUrl = imageFile ? await uploadToCloudinary(imageFile, 'user-customizations') : (req.body.imageUrl || old?.imageUrl || null);
-    const audioUrl = audioFile ? await uploadToCloudinary(audioFile, 'audio') : (req.body.audioUrl || old?.audioUrl || null);
+    const removeImage = req.body.removeImage === true || req.body.removeImage === 'true';
+    const removeAudio = req.body.removeAudio === true || req.body.removeAudio === 'true';
+    const imageUrl = removeImage
+      ? null
+      : imageFile
+        ? await uploadToCloudinary(imageFile, 'user-customizations')
+        : (req.body.imageUrl || old?.imageUrl || null);
+    const audioUrl = removeAudio
+      ? null
+      : audioFile
+        ? await uploadToCloudinary(audioFile, 'audio')
+        : (req.body.audioUrl || old?.audioUrl || null);
     const data = parseData(req.body.data);
 
     const row = await prisma.userContentCustomization.upsert({
