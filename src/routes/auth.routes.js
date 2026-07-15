@@ -6,6 +6,9 @@ const { auth } = require('../middleware/auth');
 
 const router = express.Router();
 
+const ACTIVE = 'active';
+const EXPIRED = 'expired';
+
 function sign(user) {
   return jwt.sign(
     { id: user.id, role: user.role },
@@ -20,7 +23,73 @@ function publicUser(user) {
     fullName: user.fullName,
     email: user.email,
     role: user.role,
+    isActive: user.isActive,
+    trialStartDate: user.trialStartDate,
     trialExpiryDate: user.trialExpiryDate,
+    createdAt: user.createdAt,
+  };
+}
+
+async function buildAccessState(user) {
+  if (user.role === 'ADMIN') {
+    return {
+      hasAccess: true,
+      source: 'admin',
+      status: ACTIVE,
+      expiryDate: null,
+      daysRemaining: null,
+      subscription: null,
+    };
+  }
+
+  const now = new Date();
+
+  await prisma.subscription.updateMany({
+    where: {
+      userId: user.id,
+      status: ACTIVE,
+      expiryDate: { lte: now },
+    },
+    data: { status: EXPIRED },
+  });
+
+  const subscription = await prisma.subscription.findFirst({
+    where: {
+      userId: user.id,
+      status: ACTIVE,
+      expiryDate: { gt: now },
+    },
+    orderBy: { expiryDate: 'desc' },
+  });
+
+  if (subscription) {
+    return {
+      hasAccess: true,
+      source: 'subscription',
+      status: ACTIVE,
+      expiryDate: subscription.expiryDate,
+      daysRemaining: Math.max(
+        0,
+        Math.ceil((subscription.expiryDate.getTime() - now.getTime()) / 86400000)
+      ),
+      subscription,
+    };
+  }
+
+  const trialActive = user.trialExpiryDate && user.trialExpiryDate > now;
+
+  return {
+    hasAccess: Boolean(trialActive),
+    source: trialActive ? 'trial' : 'none',
+    status: trialActive ? ACTIVE : EXPIRED,
+    expiryDate: user.trialExpiryDate || null,
+    daysRemaining: trialActive
+      ? Math.max(
+          0,
+          Math.ceil((user.trialExpiryDate.getTime() - now.getTime()) / 86400000)
+        )
+      : 0,
+    subscription: null,
   };
 }
 
@@ -32,29 +101,51 @@ router.post('/register', async (req, res, next) => {
       return res.status(400).json({ message: 'Missing fields' });
     }
 
+    const cleanName = String(fullName).trim();
     const normalizedEmail = String(email).trim().toLowerCase();
-    const exists = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+    if (cleanName.length < 2) {
+      return res.status(400).json({ message: 'Full name is too short' });
+    }
+
+    if (String(password).length < 8) {
+      return res.status(400).json({
+        message: 'Password must contain at least 8 characters',
+      });
+    }
+
+    const exists = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
 
     if (exists) {
       return res.status(409).json({ message: 'Email already exists' });
     }
 
-    const expiry = new Date();
-    expiry.setDate(expiry.getDate() + 30);
+    const trialStartDate = new Date();
+    const trialExpiryDate = new Date(trialStartDate);
+    trialExpiryDate.setUTCDate(trialExpiryDate.getUTCDate() + 30);
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(String(password), 12);
     const user = await prisma.user.create({
       data: {
-        fullName: String(fullName).trim(),
+        fullName: cleanName,
         email: normalizedEmail,
         passwordHash,
-        trialExpiryDate: expiry,
+        trialStartDate,
+        trialExpiryDate,
       },
     });
 
-    return res.json({ token: sign(user), user: publicUser(user) });
+    const access = await buildAccessState(user);
+
+    return res.status(201).json({
+      token: sign(user),
+      user: publicUser(user),
+      access,
+    });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
 
@@ -63,14 +154,20 @@ router.post('/login', async (req, res, next) => {
     const { email, password } = req.body;
     const normalizedEmail = String(email || '').trim().toLowerCase();
 
-    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (!normalizedEmail || !password) {
+      return res.status(400).json({ message: 'Email and password are required' });
+    }
 
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    // Same response for unknown email and wrong password.
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    const ok = await bcrypt.compare(password || '', user.passwordHash);
-
+    const ok = await bcrypt.compare(String(password), user.passwordHash);
     if (!ok) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -79,14 +176,25 @@ router.post('/login', async (req, res, next) => {
       return res.status(403).json({ message: 'Account suspended' });
     }
 
-    return res.json({ token: sign(user), user: publicUser(user) });
+    const access = await buildAccessState(user);
+
+    return res.json({
+      token: sign(user),
+      user: publicUser(user),
+      access,
+    });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
 
-router.get('/me', auth, async (req, res) => {
-  return res.json({ user: publicUser(req.user) });
+router.get('/me', auth, async (req, res, next) => {
+  try {
+    const access = await buildAccessState(req.user);
+    return res.json({ user: publicUser(req.user), access });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 router.delete('/delete-account', auth, async (req, res, next) => {
@@ -100,7 +208,8 @@ router.delete('/delete-account', auth, async (req, res, next) => {
       message: 'Account deleted successfully',
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
+
 module.exports = router;

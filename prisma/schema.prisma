@@ -93,22 +93,33 @@ model PaymentRequest {
   price       String
   receiptUrl  String
   status      RequestStatus @default(PENDING)
+  decidedAt   DateTime?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription?
+
+  @@index([userId, status])
 }
 
 model Subscription {
-  id        Int      @id @default(autoincrement())
-  userId    Int
-  status    String   @default("active")
-  startDate DateTime @default(now())
-  expiryDate DateTime
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               Int      @id @default(autoincrement())
+  userId           Int
+  paymentRequestId Int?     @unique
+  status           String   @default("active")
+  planName         String?
+  planMonths       Int?
+  amount           String?
+  startDate        DateTime @default(now())
+  expiryDate       DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentRequest PaymentRequest? @relation(fields: [paymentRequestId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, expiryDate])
 }
 
 model Consultation {
