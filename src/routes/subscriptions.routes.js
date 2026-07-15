@@ -157,15 +157,27 @@ router.post(
       }
 
       const receiptUrl = await fileUrl(req, 'receipts', req.file);
-      const paymentRequest = await prisma.paymentRequest.create({
-        data: {
-          userId: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          packageName,
-          price,
-          receiptUrl,
-        },
+      const paymentRequest = await prisma.$transaction(async (tx) => {
+        const created = await tx.paymentRequest.create({
+          data: {
+            userId: req.user.id,
+            userName: req.user.fullName,
+            userEmail: req.user.email,
+            packageName,
+            price,
+            receiptUrl,
+          },
+        });
+        await tx.adminNotification.create({
+          data: {
+            title: 'طلب اشتراك جديد',
+            body: `${req.user.fullName} - ${packageName}`,
+            type: 'subscription',
+            sourceId: created.id,
+            route: '/admin/subscriptions',
+          },
+        });
+        return created;
       });
 
       return res.status(201).json(paymentRequest);
@@ -292,6 +304,10 @@ router.post(
           },
         });
 
+        await tx.adminNotification.deleteMany({
+          where: { type: 'subscription', sourceId: paymentRequest.id },
+        });
+
         return {
           alreadyApproved: false,
           paymentRequest: approvedRequest,
@@ -338,9 +354,15 @@ router.post(
         return res.json({ ok: true, alreadyRejected: true, paymentRequest });
       }
 
-      const rejected = await prisma.paymentRequest.update({
-        where: { id: requestId },
-        data: { status: 'REJECTED', decidedAt: new Date() },
+      const rejected = await prisma.$transaction(async (tx) => {
+        const updated = await tx.paymentRequest.update({
+          where: { id: requestId },
+          data: { status: 'REJECTED', decidedAt: new Date() },
+        });
+        await tx.adminNotification.deleteMany({
+          where: { type: 'subscription', sourceId: requestId },
+        });
+        return updated;
       });
 
       return res.json({ ok: true, alreadyRejected: false, paymentRequest: rejected });

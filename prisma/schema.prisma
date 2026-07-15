@@ -186,3 +186,19 @@ model UserContentCustomization {
   @@unique([userId, contentKey])
   @@index([userId])
 }
+
+
+model AdminNotification {
+  id        Int      @id @default(autoincrement())
+  title     String
+  body      String
+  type      String
+  sourceId  Int
+  route     String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([type, sourceId])
+  @@index([isRead, createdAt])
+}
