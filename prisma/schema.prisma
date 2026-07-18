@@ -202,3 +202,17 @@ model AdminNotification {
   @@unique([type, sourceId])
   @@index([isRead, createdAt])
 }
+
+
+model SpecialistAvailability {
+  id             Int      @id @default(autoincrement())
+  specialistName String
+  availableDate  DateTime
+  startTime      String
+  isAvailable    Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([specialistName, availableDate, startTime])
+  @@index([specialistName, availableDate, isAvailable])
+}
