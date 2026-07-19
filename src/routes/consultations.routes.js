@@ -1,169 +1,192 @@
 const express = require('express');
 const prisma = require('../config/prisma');
 const { auth, adminOnly } = require('../middleware/auth');
+const { makeUpload, fileUrl } = require('../utils/upload');
 
 const router = express.Router();
-const allowedStatuses = new Set(['NEW', 'ACCEPTED', 'REJECTED', 'CHANGED']);
-const timePattern = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const allowedStatuses = new Set([
+  'NEW',
+  'PAYMENT_CONFIRMED',
+  'ACCEPTED',
+  'REJECTED',
+  'CHANGED',
+  'COMPLETED',
+  'CANCELLED',
+]);
+const reusableStatuses = new Set(['REJECTED', 'CANCELLED']);
 
-function normalizeDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+function asPositiveInt(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-function validateAvailabilityInput(body) {
-  const specialistName = String(body.specialistName || '').trim();
-  const availableDate = normalizeDate(body.availableDate);
-  const startTime = String(body.startTime || '').trim();
-
-  if (!specialistName) return { error: 'Specialist name is required' };
-  if (!availableDate) return { error: 'Valid available date is required' };
-  if (!timePattern.test(startTime)) return { error: 'Time must use HH:mm format' };
-
-  return { specialistName, availableDate, startTime };
+function validPhone(value) {
+  return /^\+?[0-9\s-]{8,20}$/.test(value);
 }
 
-router.get('/availability', auth, async (req, res, next) => {
+router.get('/availability', auth, async (_req, res, next) => {
   try {
-    const specialistName = String(req.query.specialist || '').trim();
-    if (!specialistName) {
-      return res.status(400).json({ message: 'Specialist is required' });
-    }
-
-    const from = req.query.from ? normalizeDate(req.query.from) : normalizeDate(new Date());
-    if (!from) return res.status(400).json({ message: 'Invalid from date' });
-
-    const rows = await prisma.specialistAvailability.findMany({
-      where: {
-        specialistName,
-        availableDate: { gte: from },
-        isAvailable: true,
-      },
-      orderBy: [{ availableDate: 'asc' }, { startTime: 'asc' }],
+    const slots = await prisma.specialistAvailability.findMany({
+      where: { isAvailable: true, startAt: { gt: new Date() } },
+      orderBy: { startAt: 'asc' },
     });
-
-    res.json(rows);
+    return res.json(slots);
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
 
-router.get('/availability/admin/all', auth, adminOnly, async (req, res, next) => {
+router.get('/availability/admin', auth, adminOnly, async (_req, res, next) => {
   try {
-    const specialistName = String(req.query.specialist || '').trim();
-    const rows = await prisma.specialistAvailability.findMany({
-      where: specialistName ? { specialistName } : undefined,
-      orderBy: [{ availableDate: 'asc' }, { startTime: 'asc' }],
+    const slots = await prisma.specialistAvailability.findMany({
+      orderBy: { startAt: 'desc' },
+      include: {
+        consultations: {
+          where: { status: { notIn: ['REJECTED', 'CANCELLED'] } },
+          select: { id: true, status: true, userName: true },
+        },
+      },
     });
-    res.json(rows);
+    return res.json(slots);
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
 
 router.post('/availability', auth, adminOnly, async (req, res, next) => {
   try {
-    const parsed = validateAvailabilityInput(req.body);
-    if (parsed.error) return res.status(400).json({ message: parsed.error });
-
-    const row = await prisma.specialistAvailability.upsert({
-      where: {
-        specialistName_availableDate_startTime: {
-          specialistName: parsed.specialistName,
-          availableDate: parsed.availableDate,
-          startTime: parsed.startTime,
-        },
-      },
-      create: {
-        specialistName: parsed.specialistName,
-        availableDate: parsed.availableDate,
-        startTime: parsed.startTime,
-        isAvailable: req.body.isAvailable !== false && req.body.isAvailable !== 'false',
-      },
-      update: {
-        isAvailable: req.body.isAvailable !== false && req.body.isAvailable !== 'false',
-      },
+    const specialist = String(req.body.specialist || '').trim();
+    const startAt = new Date(req.body.startAt);
+    const durationMinutes = Number(req.body.durationMinutes);
+    if (!specialist || Number.isNaN(startAt.getTime())) {
+      return res.status(400).json({ message: 'المختص والموعد مطلوبان' });
+    }
+    if (![30, 60].includes(durationMinutes)) {
+      return res.status(400).json({ message: 'مدة الموعد يجب أن تكون 30 أو 60 دقيقة' });
+    }
+    if (startAt <= new Date()) {
+      return res.status(400).json({ message: 'يجب اختيار موعد مستقبلي' });
+    }
+    const slot = await prisma.specialistAvailability.create({
+      data: { specialist, startAt, durationMinutes, isAvailable: req.body.isAvailable !== false },
     });
-
-    res.status(201).json(row);
+    return res.status(201).json(slot);
   } catch (error) {
-    next(error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({ message: 'هذا الموعد مضاف مسبقًا' });
+    }
+    return next(error);
   }
 });
 
 router.put('/availability/:id', auth, adminOnly, async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({ message: 'Invalid availability id' });
-    }
+    const id = asPositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ message: 'رقم الموعد غير صالح' });
+    const current = await prisma.specialistAvailability.findUnique({ where: { id } });
+    if (!current) return res.status(404).json({ message: 'الموعد غير موجود' });
 
     const data = {};
-    if (req.body.specialistName !== undefined) {
-      const specialistName = String(req.body.specialistName).trim();
-      if (!specialistName) return res.status(400).json({ message: 'Specialist name is required' });
-      data.specialistName = specialistName;
+    if (req.body.specialist !== undefined) data.specialist = String(req.body.specialist).trim();
+    if (req.body.startAt !== undefined) {
+      const startAt = new Date(req.body.startAt);
+      if (Number.isNaN(startAt.getTime()) || startAt <= new Date()) {
+        return res.status(400).json({ message: 'الموعد غير صالح' });
+      }
+      data.startAt = startAt;
     }
-    if (req.body.availableDate !== undefined) {
-      const availableDate = normalizeDate(req.body.availableDate);
-      if (!availableDate) return res.status(400).json({ message: 'Invalid available date' });
-      data.availableDate = availableDate;
+    if (req.body.durationMinutes !== undefined) {
+      const duration = Number(req.body.durationMinutes);
+      if (![30, 60].includes(duration)) {
+        return res.status(400).json({ message: 'مدة الموعد يجب أن تكون 30 أو 60 دقيقة' });
+      }
+      data.durationMinutes = duration;
     }
-    if (req.body.startTime !== undefined) {
-      const startTime = String(req.body.startTime).trim();
-      if (!timePattern.test(startTime)) return res.status(400).json({ message: 'Time must use HH:mm format' });
-      data.startTime = startTime;
-    }
-    if (req.body.isAvailable !== undefined) {
-      data.isAvailable = req.body.isAvailable === true || req.body.isAvailable === 'true';
-    }
+    if (req.body.isAvailable !== undefined) data.isAvailable = Boolean(req.body.isAvailable);
 
-    const row = await prisma.specialistAvailability.update({ where: { id }, data });
-    res.json(row);
+    const slot = await prisma.specialistAvailability.update({ where: { id }, data });
+    return res.json(slot);
   } catch (error) {
-    if (error.code === 'P2025') return res.status(404).json({ message: 'Availability slot not found' });
-    if (error.code === 'P2002') return res.status(409).json({ message: 'This slot already exists' });
-    next(error);
+    if (error.code === 'P2002') return res.status(409).json({ message: 'هذا الموعد مضاف مسبقًا' });
+    return next(error);
   }
 });
 
 router.delete('/availability/:id', auth, adminOnly, async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({ message: 'Invalid availability id' });
+    const id = asPositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ message: 'رقم الموعد غير صالح' });
+    const activeBooking = await prisma.consultation.findFirst({
+      where: { availabilityId: id, status: { notIn: ['REJECTED', 'CANCELLED'] } },
+    });
+    if (activeBooking) {
+      return res.status(409).json({ message: 'لا يمكن حذف موعد مرتبط بطلب فعال' });
     }
     await prisma.specialistAvailability.delete({ where: { id } });
-    res.json({ ok: true });
+    return res.status(204).send();
   } catch (error) {
-    if (error.code === 'P2025') return res.status(404).json({ message: 'Availability slot not found' });
-    next(error);
+    if (error.code === 'P2025') return res.status(404).json({ message: 'الموعد غير موجود' });
+    return next(error);
   }
 });
 
-router.post('/', auth, async (req, res, next) => {
+router.post('/', auth, makeUpload('consultation-receipts', 'receipt'), async (req, res, next) => {
   try {
-    const specialist = String(req.body.specialist || '').trim();
+    const userName = String(req.body.userName || '').trim();
+    const phone = String(req.body.phone || '').trim();
+    const availabilityId = asPositiveInt(req.body.availabilityId);
     const message = String(req.body.message || '').trim();
-    if (!specialist) return res.status(400).json({ message: 'Specialist required' });
 
+    if (!userName || !phone || !availabilityId || !req.file) {
+      return res.status(400).json({
+        message: 'الاسم ورقم الهاتف والموعد وصورة وصل الدفع حقول إجبارية',
+      });
+    }
+    if (!validPhone(phone)) {
+      return res.status(400).json({ message: 'رقم الهاتف غير صالح' });
+    }
+
+    const receiptUrl = await fileUrl(req, 'consultation-receipts', req.file);
     const consultation = await prisma.$transaction(async (tx) => {
+      const slot = await tx.specialistAvailability.findUnique({ where: { id: availabilityId } });
+      if (!slot || !slot.isAvailable || slot.startAt <= new Date()) {
+        const error = new Error('عذرًا، هذا الموعد غير متاح. يرجى اختيار موعد مختلف.');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const locked = await tx.specialistAvailability.updateMany({
+        where: { id: availabilityId, isAvailable: true },
+        data: { isAvailable: false },
+      });
+      if (locked.count !== 1) {
+        const error = new Error('عذرًا، تم حجز هذا الموعد من عميل آخر. يرجى اختيار موعد مختلف.');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const priceJod = slot.durationMinutes === 60 ? 10 : 5;
       const created = await tx.consultation.create({
         data: {
           userId: req.user.id,
-          userName: req.user.fullName,
+          availabilityId: slot.id,
+          userName,
           userEmail: req.user.email,
-          specialist,
+          phone,
+          specialist: slot.specialist,
           message: message || null,
-          date: req.body.date ? new Date(req.body.date) : null,
-          time: req.body.time ? String(req.body.time) : null,
+          receiptUrl,
+          durationMinutes: slot.durationMinutes,
+          priceJod,
+          date: slot.startAt,
+          time: slot.startAt.toISOString().slice(11, 16),
         },
       });
+
       await tx.adminNotification.create({
         data: {
           title: 'طلب استشارة جديد',
-          body: `${req.user.fullName} - ${specialist}`,
+          body: `${userName} - ${slot.specialist} - ${slot.durationMinutes} دقيقة`,
           type: 'consultation',
           sourceId: created.id,
           route: '/admin/consultations',
@@ -171,45 +194,66 @@ router.post('/', auth, async (req, res, next) => {
       });
       return created;
     });
-    res.status(201).json(consultation);
+
+    return res.status(201).json(consultation);
   } catch (error) {
-    next(error);
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.get('/', auth, adminOnly, async (req, res, next) => {
+router.get('/', auth, adminOnly, async (_req, res, next) => {
   try {
-    res.json(await prisma.consultation.findMany({ orderBy: { id: 'desc' } }));
+    const consultations = await prisma.consultation.findMany({
+      orderBy: { id: 'desc' },
+      include: { availability: true },
+    });
+    return res.json(consultations);
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
 
 router.put('/:id/status', auth, adminOnly, async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = asPositiveInt(req.params.id);
     const status = String(req.body.status || '').toUpperCase();
-    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Invalid consultation id' });
-    if (!allowedStatuses.has(status)) return res.status(400).json({ message: 'Invalid consultation status' });
+    const rejectionReason = String(req.body.rejectionReason || '').trim();
+    if (!id) return res.status(400).json({ message: 'رقم الطلب غير صالح' });
+    if (!allowedStatuses.has(status)) return res.status(400).json({ message: 'حالة الطلب غير صالحة' });
+    if (status === 'REJECTED' && !rejectionReason) {
+      return res.status(400).json({ message: 'سبب الرفض مطلوب' });
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
+      const existing = await tx.consultation.findUnique({ where: { id } });
+      if (!existing) {
+        const error = new Error('طلب الاستشارة غير موجود');
+        error.statusCode = 404;
+        throw error;
+      }
       const consultation = await tx.consultation.update({
         where: { id },
         data: {
           status,
-          date: req.body.date ? new Date(req.body.date) : undefined,
-          time: req.body.time !== undefined ? String(req.body.time || '') || null : undefined,
+          rejectionReason: status === 'REJECTED' ? rejectionReason : null,
         },
       });
+      if (reusableStatuses.has(status) && existing.availabilityId) {
+        await tx.specialistAvailability.update({
+          where: { id: existing.availabilityId },
+          data: { isAvailable: Boolean(existing.date && existing.date > new Date()) },
+        });
+      }
       if (status !== 'NEW') {
         await tx.adminNotification.deleteMany({ where: { type: 'consultation', sourceId: id } });
       }
       return consultation;
     });
-    res.json(updated);
+    return res.json(updated);
   } catch (error) {
-    if (error.code === 'P2025') return res.status(404).json({ message: 'Consultation not found' });
-    next(error);
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    return next(error);
   }
 });
 
