@@ -374,7 +374,26 @@ router.post(
 
 router.get('/me', auth, async (req, res, next) => {
   try {
-    const access = await getAccessState(req.user);
+    const user = await prisma.user.findUnique({
+      where: {
+        id: req.user.id,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found',
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({
+        message: 'Account suspended',
+      });
+    }
+
+    const access = await getAccessState(user);
+
     return res.json(access);
   } catch (error) {
     return next(error);
