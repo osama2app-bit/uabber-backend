@@ -44,6 +44,7 @@ model User {
   consultations   Consultation[]
   paymentRequests PaymentRequest[]
   educationalContentUpdates EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
+  educationalQuestionUpdates EducationalQuestion[] @relation("EducationalQuestionUpdatedBy")
   contentCustomizations UserContentCustomization[]
 }
 
@@ -195,6 +196,29 @@ model EducationalContentOverride {
 
   @@index([unitId])
   @@index([targetKey])
+}
+
+
+model EducationalQuestion {
+  id           String   @id
+  unitId       String
+  itemKey      String
+  sourceKey    String?
+  question     String
+  speechText   String
+  correctTitle String
+  options      Json
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  isOverride   Boolean  @default(false)
+  updatedById  Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  updatedBy User @relation("EducationalQuestionUpdatedBy", fields: [updatedById], references: [id], onDelete: Cascade)
+
+  @@index([unitId, itemKey])
+  @@index([sourceKey])
 }
 
 model UserContentCustomization {

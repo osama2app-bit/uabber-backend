@@ -32,6 +32,108 @@ router.get('/unit/:unitId', async (req, res) => {
   }
 });
 
+
+
+router.get('/questions/unit/:unitId/item/:itemKey', async (req, res) => {
+  try {
+    const includeInactive = req.query.admin === 'true';
+    const rows = await prisma.educationalQuestion.findMany({
+      where: {
+        unitId: req.params.unitId,
+        itemKey: req.params.itemKey,
+        ...(includeInactive ? {} : { isActive: true }),
+      },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+    res.json(rows);
+  } catch (error) {
+    console.error('GET EDUCATIONAL QUESTIONS ERROR:', error);
+    res.status(500).json({ message: 'Failed to load educational questions' });
+  }
+});
+
+router.post('/questions', auth, adminOnly, async (req, res) => {
+  try {
+    const {
+      id,
+      unitId,
+      itemKey,
+      sourceKey,
+      question,
+      speechText,
+      correctTitle,
+      options,
+      isActive,
+      sortOrder,
+      isOverride,
+    } = req.body;
+
+    if (!id || !unitId || !itemKey || !question || !speechText || !correctTitle) {
+      return res.status(400).json({
+        message: 'id, unitId, itemKey, question, speechText and correctTitle are required',
+      });
+    }
+
+    if (!Array.isArray(options) || options.length < 2) {
+      return res.status(400).json({ message: 'At least two options are required' });
+    }
+
+    const cleanedOptions = options
+      .map((option) => ({
+        title: String(option?.title || '').trim(),
+        emoji: String(option?.emoji || '❓').trim() || '❓',
+      }))
+      .filter((option) => option.title.length > 0);
+
+    if (cleanedOptions.length < 2) {
+      return res.status(400).json({ message: 'At least two valid options are required' });
+    }
+
+    const normalizedCorrect = String(correctTitle).trim();
+    if (!cleanedOptions.some((option) => option.title === normalizedCorrect)) {
+      return res.status(400).json({ message: 'Correct answer must be one of the options' });
+    }
+
+    const data = {
+      unitId: String(unitId),
+      itemKey: String(itemKey),
+      sourceKey: sourceKey ? String(sourceKey) : null,
+      question: String(question).trim(),
+      speechText: String(speechText).trim(),
+      correctTitle: normalizedCorrect,
+      options: cleanedOptions,
+      isActive: boolValue(isActive, true),
+      sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : 0,
+      isOverride: boolValue(isOverride),
+      updatedById: req.user.id,
+    };
+
+    const row = await prisma.educationalQuestion.upsert({
+      where: { id: String(id) },
+      create: { id: String(id), ...data },
+      update: data,
+    });
+
+    res.json(row);
+  } catch (error) {
+    console.error('UPSERT EDUCATIONAL QUESTION ERROR:', error);
+    res.status(500).json({ message: 'Failed to save educational question', error: error.message });
+  }
+});
+
+router.delete('/questions/:id', auth, adminOnly, async (req, res) => {
+  try {
+    await prisma.educationalQuestion.delete({ where: { id: req.params.id } });
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ message: 'Question not found' });
+    }
+    console.error('DELETE EDUCATIONAL QUESTION ERROR:', error);
+    res.status(500).json({ message: 'Failed to delete educational question' });
+  }
+});
+
 router.post('/', auth, adminOnly, upload, async (req, res) => {
   try {
     const { id, unitId, title, speechText, targetKey } = req.body;
