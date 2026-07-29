@@ -124,7 +124,7 @@ router.post('/register', async (req, res, next) => {
 
     const trialStartDate = new Date();
     const trialExpiryDate = new Date(trialStartDate);
-    trialExpiryDate.setUTCDate(trialExpiryDate.getUTCDate() + 2);
+    trialExpiryDate.setUTCDate(trialExpiryDate.getUTCDate() + 30);
 
     const passwordHash = await bcrypt.hash(String(password), 12);
     const user = await prisma.user.create({
