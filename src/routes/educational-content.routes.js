@@ -52,7 +52,7 @@ router.get('/questions/unit/:unitId/item/:itemKey', async (req, res) => {
   }
 });
 
-router.post('/questions', auth, adminOnly, async (req, res) => {
+router.post('/questions', auth, adminOnly, upload, async (req, res) => {
   try {
     const {
       id,
@@ -62,11 +62,19 @@ router.post('/questions', auth, adminOnly, async (req, res) => {
       question,
       speechText,
       correctTitle,
-      options,
       isActive,
       sortOrder,
       isOverride,
     } = req.body;
+
+    let options = req.body.options;
+    if (typeof options === 'string') {
+      try {
+        options = JSON.parse(options);
+      } catch (_) {
+        return res.status(400).json({ message: 'options must be valid JSON' });
+      }
+    }
 
     if (!id || !unitId || !itemKey || !question || !speechText || !correctTitle) {
       return res.status(400).json({
@@ -78,12 +86,27 @@ router.post('/questions', auth, adminOnly, async (req, res) => {
       return res.status(400).json({ message: 'At least two options are required' });
     }
 
-    const cleanedOptions = options
-      .map((option) => ({
-        title: String(option?.title || '').trim(),
-        emoji: String(option?.emoji || '❓').trim() || '❓',
-      }))
-      .filter((option) => option.title.length > 0);
+    const cleanedOptions = [];
+    for (let index = 0; index < options.length; index += 1) {
+      const option = options[index] || {};
+      const title = String(option.title || '').trim();
+      if (!title) continue;
+
+      const imageFile = fileFor(req, `optionImage_${index}`);
+      let imageUrl = option.imageUrl ? String(option.imageUrl).trim() : null;
+      if (imageFile) {
+        imageUrl = await uploadToCloudinary(
+          imageFile,
+          `educational-questions/${String(unitId)}/${String(itemKey)}`
+        );
+      }
+
+      cleanedOptions.push({
+        title,
+        emoji: String(option.emoji || '❓').trim() || '❓',
+        imageUrl: imageUrl || null,
+      });
+    }
 
     if (cleanedOptions.length < 2) {
       return res.status(400).json({ message: 'At least two valid options are required' });
