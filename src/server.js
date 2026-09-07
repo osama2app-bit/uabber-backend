@@ -16,6 +16,7 @@ app.get('/health',(_,res)=>res.json({ok:true,name:'uabber-backend'}));
 app.use('/api/auth',require('./routes/auth.routes'));
 app.use('/api/categories',require('./routes/categories.routes'));
 app.use('/api/items',require('./routes/items.routes'));
+app.use('/api/subscriptions',require('./routes/apple-iap.routes'));
 app.use('/api/subscriptions',require('./routes/subscriptions.routes'));
 app.use('/api/consultations',require('./routes/consultations.routes'));
 app.use('/api/journey-steps',require('./routes/journey.routes'));

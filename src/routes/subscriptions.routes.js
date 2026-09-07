@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../config/prisma');
 const { auth, adminOnly } = require('../middleware/auth');
 const { makeUpload, fileUrl } = require('../utils/upload');
+const { refreshAppleSubscriptions } = require('../services/appleIap');
 
 const router = express.Router();
 
@@ -183,6 +184,9 @@ async function getAccessState(
       subscription: null,
     };
   }
+
+  // يلتقط التجديد التلقائي من آبل قبل الحكم بانتهاء الاشتراك.
+  await refreshAppleSubscriptions(user.id, tx);
 
   await expireStaleSubscriptions(
     user.id,

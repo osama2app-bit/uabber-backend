@@ -120,10 +120,19 @@ model Subscription {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  // Apple In-App Purchase
+  provider                   String    @default("manual")
+  appleOriginalTransactionId String?   @unique
+  appleProductId             String?
+  appleLatestReceipt         String?
+  appleEnvironment           String?
+  appleLastCheckedAt         DateTime?
+
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   paymentRequest PaymentRequest? @relation(fields: [paymentRequestId], references: [id], onDelete: SetNull)
 
   @@index([userId, status, expiryDate])
+  @@index([provider])
 }
 
 model SpecialistAvailability {
