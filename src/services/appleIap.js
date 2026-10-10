@@ -56,8 +56,19 @@ function isJws(value) {
 
 /**
  * تحميل شهادات Apple الجذرية.
+ *
+ * - يتجاهل أي شهادة غير موجودة بدل ما يفشل.
+ * - يفشل فقط إذا ما في ولا شهادة.
+ * - G3 هي الأهم لـ StoreKit 2.
+ * - النتيجة تنحفظ بالذاكرة عشان ما نقرأ الملفات كل طلب.
  */
+let cachedAppleRoots = null;
+
 function loadAppleRootCertificates() {
+  if (cachedAppleRoots) {
+    return cachedAppleRoots;
+  }
+
   const files = [
     process.env.APPLE_ROOT_CA_G2_PATH ||
       './certs/AppleRootCA-G2.cer',
@@ -72,19 +83,35 @@ function loadAppleRootCertificates() {
       './certs/AppleComputerRootCertificate.cer',
   ];
 
-  return files.map((file) => {
+  const roots = [];
+  const missing = [];
+
+  for (const file of files) {
     const resolved = path.isAbsolute(file)
       ? file
       : path.resolve(process.cwd(), file);
 
-    if (!fs.existsSync(resolved)) {
-      throw new Error(
-        `Apple root certificate not found: ${resolved}`
-      );
+    if (fs.existsSync(resolved)) {
+      roots.push(fs.readFileSync(resolved));
+    } else {
+      missing.push(resolved);
     }
+  }
 
-    return fs.readFileSync(resolved);
-  });
+  if (missing.length) {
+    console.warn(
+      `[apple-iap] Skipping missing Apple root certificates: ${missing.join(', ')}`
+    );
+  }
+
+  if (roots.length === 0) {
+    throw new Error(
+      'No Apple root certificates found. Add AppleRootCA-G3.cer to the certs folder.'
+    );
+  }
+
+  cachedAppleRoots = roots;
+  return roots;
 }
 
 /**
