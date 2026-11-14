@@ -43,5 +43,5 @@ INSERT INTO "SubscriptionPlan" ("name", "description", "price", "currency", "dur
 
 -- بيانات CliQ الحالية
 INSERT INTO "AppSetting" ("key", "value", "updatedAt") VALUES
-  ('cliq', '{"alias":"Aseele1999","accountName":"","bankName":"","instructions":"حوّل قيمة الباقة عبر CliQ إلى الاسم المستعار أدناه، ثم ارفع صورة إثبات التحويل."}', CURRENT_TIMESTAMP)
+  ('cliq', '{"alias":"Aseele1999","accountName":"","bankName":"بنك القاهرة عمان","instructions":"حوّل قيمة الباقة عبر CliQ إلى الاسم المستعار أدناه، ثم ارفع صورة إثبات التحويل."}', CURRENT_TIMESTAMP)
 ON CONFLICT ("key") DO NOTHING;

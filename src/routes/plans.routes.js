@@ -135,7 +135,7 @@ plansRouter.delete('/:id', adminOnly, async (req, res) => {
 const CLIQ_DEFAULT = {
   alias: 'Aseele1999',
   accountName: '',
-  bankName: '',
+  bankName: 'بنك القاهرة عمان',
   instructions: 'حوّل قيمة الباقة عبر CliQ إلى الاسم المستعار أدناه، ثم ارفع صورة إثبات التحويل.',
 };
 
