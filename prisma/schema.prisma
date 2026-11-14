@@ -50,6 +50,7 @@ model User {
   contentCustomizations UserContentCustomization[]
   eventSequenceGroups   EventSequenceGroup[] @relation("EventSequenceOwner")
   passwordResetCodes    PasswordResetCode[]
+  progress              UserProgress?
 }
 
 model Category {
@@ -322,4 +323,14 @@ model PasswordResetCode {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+}
+
+// تقدّم الطفل في البرنامج التعليمي محفوظ في الحساب
+// (يُستعاد بعد حذف التطبيق أو عند الدخول من جهاز آخر)
+model UserProgress {
+  userId    Int      @id
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
