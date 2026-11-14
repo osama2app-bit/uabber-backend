@@ -37,6 +37,8 @@ model User {
   isActive        Boolean   @default(true)
   trialStartDate  DateTime  @default(now())
   trialExpiryDate DateTime
+  // آخر تغيير لكلمة المرور: أي جلسة أقدم منه تصبح غير صالحة
+  passwordChangedAt DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -46,6 +48,9 @@ model User {
   educationalContentUpdates EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
   educationalQuestionUpdates EducationalQuestion[] @relation("EducationalQuestionUpdatedBy")
   contentCustomizations UserContentCustomization[]
+  eventSequenceGroups   EventSequenceGroup[] @relation("EventSequenceOwner")
+  passwordResetCodes    PasswordResetCode[]
+  progress              UserProgress?
 }
 
 model Category {
@@ -98,11 +103,17 @@ model PaymentRequest {
   receiptUrl  String
   status      RequestStatus @default(PENDING)
   decidedAt   DateTime?
+  planId        Int?
+  durationType  String?
+  durationValue Int?
+  paymentMethod String   @default("cliq")
+  rejectionReason String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   subscription Subscription?
+  plan         SubscriptionPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
 }
@@ -217,6 +228,12 @@ model EducationalQuestion {
   speechText   String
   correctTitle String
   options      Json
+  // choice = اختيار من صور/كلمات، true_false = صح وخطأ
+  type         String   @default("choice")
+  // صورة السؤال نفسه (اختيارية)
+  imageUrl     String?
+  // null = سؤال عام من الأدمن، رقم = سؤال أضافه مستخدم لحسابه فقط
+  ownerId      Int?
   isActive     Boolean  @default(true)
   sortOrder    Int      @default(0)
   isOverride   Boolean  @default(false)
@@ -228,6 +245,7 @@ model EducationalQuestion {
 
   @@index([unitId, itemKey])
   @@index([sourceKey])
+  @@index([ownerId])
 }
 
 model UserContentCustomization {
@@ -262,4 +280,95 @@ model AdminNotification {
 
   @@unique([type, sourceId])
   @@index([isRead, createdAt])
+}
+
+// ===== تسلسل الأحداث (Event Sequences) =====
+// مجموعة مستقلة لها اسم وصورة غلاف ووصف اختياري، وبداخلها أحداث مرتبة.
+// ownerId = null  => مجموعة عامة يديرها الأدمن وتظهر لكل المستخدمين.
+// ownerId = <id>  => مجموعة خاصة بحساب المستخدم وتُستعاد على أي جهاز.
+model EventSequenceGroup {
+  id            Int      @id @default(autoincrement())
+  title         String
+  description   String?
+  coverImageUrl String?
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  ownerId       Int?
+  // مفتاح يرسله التطبيق لمنع تكرار المجموعة عند إعادة المزامنة
+  clientId      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  owner  User?                @relation("EventSequenceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  events EventSequenceEvent[]
+
+  @@unique([ownerId, clientId])
+  @@index([ownerId, isActive, sortOrder])
+}
+
+model EventSequenceEvent {
+  id          Int      @id @default(autoincrement())
+  groupId     Int
+  title       String
+  description String?
+  imageUrl    String?
+  audioUrl    String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  group EventSequenceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, sortOrder])
+}
+
+// رموز استعادة كلمة المرور (تُخزَّن مشفّرة، صالحة لمدة قصيرة، ولمرة واحدة)
+model PasswordResetCode {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// تقدّم الطفل في البرنامج التعليمي محفوظ في الحساب
+// (يُستعاد بعد حذف التطبيق أو عند الدخول من جهاز آخر)
+model UserProgress {
+  userId    Int      @id
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// خطط الاشتراك: يحددها الأدمن (الاسم، السعر، المدة) من لوحة التحكم
+model SubscriptionPlan {
+  id            Int      @id @default(autoincrement())
+  name          String
+  description   String?
+  price         String
+  currency      String   @default("JOD")
+  durationType  String   @default("months") // months | days
+  durationValue Int      @default(1)
+  isActive      Boolean  @default(true)
+  isFeatured    Boolean  @default(false)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  paymentRequests PaymentRequest[]
+}
+
+// إعدادات عامة يعدّلها الأدمن (مثل بيانات الدفع عبر CliQ)
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
 }

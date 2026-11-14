@@ -91,6 +91,47 @@ function localDateTimeToUtc(dateParts, minutesFromMidnight, utcOffsetMinutes) {
   );
 }
 
+// يمنع تداخل المواعيد لنفس الأخصائي (وليس التطابق التام فقط):
+// أي موعد يبدأ قبل نهاية موعد آخر وينتهي بعد بدايته يُعتبر متداخلًا.
+async function findOverlap(db, specialist, startAt, durationMinutes, excludeId) {
+  const ms = durationMinutes * 60 * 1000;
+  return db.specialistAvailability.findFirst({
+    where: {
+      specialist,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+      startAt: {
+        gt: new Date(startAt.getTime() - ms),
+        lt: new Date(startAt.getTime() + ms),
+      },
+    },
+  });
+}
+
+function overlapsAny(startAt, existingStarts, durationMinutes) {
+  const ms = durationMinutes * 60 * 1000;
+  return existingStarts.some((t) => Math.abs(t - startAt.getTime()) < ms);
+}
+
+const ACTIVE_STATUSES = ['NEW', 'PAYMENT_CONFIRMED', 'ACCEPTED', 'CHANGED'];
+
+// طلبات المستخدم وحالتها
+router.get('/mine', auth, async (req, res, next) => {
+  try {
+    const rows = await prisma.consultation.findMany({
+      where: { userId: req.user.id },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      select: {
+        id: true, specialist: true, status: true, rejectionReason: true,
+        date: true, durationMinutes: true, priceJod: true, createdAt: true,
+      },
+    });
+    return res.json(rows);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get('/availability', auth, async (req, res, next) => {
   try {
     const requestedSpecialist = String(req.query.specialist || '').trim();
@@ -148,6 +189,11 @@ router.post('/availability', auth, adminOnly, async (req, res, next) => {
       const startAt = new Date(req.body.startAt);
       if (Number.isNaN(startAt.getTime()) || startAt <= new Date()) {
         return res.status(400).json({ message: 'يجب اختيار موعد مستقبلي صالح' });
+      }
+
+      const overlap = await findOverlap(prisma, specialist, startAt, SESSION_DURATION_MINUTES);
+      if (overlap) {
+        return res.status(409).json({ message: 'يوجد موعد آخر متداخل مع هذا الوقت' });
       }
 
       const slot = await prisma.specialistAvailability.create({
@@ -215,8 +261,30 @@ router.post('/availability', auth, adminOnly, async (req, res, next) => {
       });
     }
 
+    // استبعاد ما يتداخل مع مواعيد موجودة مسبقًا
+    const rangeMs = SESSION_DURATION_MINUTES * 60 * 1000;
+    const existing = await prisma.specialistAvailability.findMany({
+      where: {
+        specialist,
+        startAt: {
+          gt: new Date(starts[0].getTime() - rangeMs),
+          lt: new Date(starts[starts.length - 1].getTime() + rangeMs),
+        },
+      },
+      select: { startAt: true },
+    });
+    const existingStarts = existing.map((e) => e.startAt.getTime());
+    const freeStarts = starts.filter(
+      (startAt) => !overlapsAny(startAt, existingStarts, SESSION_DURATION_MINUTES)
+    );
+    if (freeStarts.length === 0) {
+      return res.status(409).json({
+        message: 'كل هذه المواعيد موجودة مسبقًا أو متداخلة مع مواعيد أخرى',
+      });
+    }
+
     const result = await prisma.specialistAvailability.createMany({
-      data: starts.map((startAt) => ({
+      data: freeStarts.map((startAt) => ({
         specialist,
         startAt,
         durationMinutes: SESSION_DURATION_MINUTES,
@@ -264,6 +332,12 @@ router.put('/availability/:id', auth, adminOnly, async (req, res, next) => {
       const startAt = new Date(req.body.startAt);
       if (Number.isNaN(startAt.getTime()) || startAt <= new Date()) {
         return res.status(400).json({ message: 'الموعد غير صالح' });
+      }
+      const overlap = await findOverlap(
+        prisma, data.specialist || current.specialist, startAt, current.durationMinutes, id
+      );
+      if (overlap) {
+        return res.status(409).json({ message: 'يوجد موعد آخر متداخل مع هذا الوقت' });
       }
       data.startAt = startAt;
     }
@@ -460,6 +534,103 @@ router.put('/:id/status', auth, adminOnly, async (req, res, next) => {
       }
 
       return consultation;
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    return next(error);
+  }
+});
+
+// حذف عدة مواعيد فارغة دفعة واحدة (المحجوزة لا تُحذف)
+router.post('/availability/bulk-delete', auth, adminOnly, async (req, res, next) => {
+  try {
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : [])
+      .map(asPositiveInt)
+      .filter(Boolean)
+      .slice(0, 500);
+    if (!ids.length) return res.status(400).json({ message: 'لم يتم اختيار مواعيد' });
+
+    const booked = await prisma.consultation.findMany({
+      where: { availabilityId: { in: ids }, status: { notIn: ['REJECTED', 'CANCELLED'] } },
+      select: { availabilityId: true },
+    });
+    const bookedIds = new Set(booked.map((b) => b.availabilityId));
+    const deletable = ids.filter((id) => !bookedIds.has(id));
+
+    // نفك ارتباط الطلبات الملغاة/المرفوضة القديمة قبل الحذف
+    await prisma.consultation.updateMany({
+      where: { availabilityId: { in: deletable } },
+      data: { availabilityId: null },
+    });
+    const result = await prisma.specialistAvailability.deleteMany({
+      where: { id: { in: deletable } },
+    });
+    return res.json({ deletedCount: result.count, skippedBooked: bookedIds.size });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// نقل حجز إلى موعد آخر متاح (تصبح الحالة: تم تغيير الموعد)
+router.put('/:id/reschedule', auth, adminOnly, async (req, res, next) => {
+  try {
+    const id = asPositiveInt(req.params.id);
+    const availabilityId = asPositiveInt(req.body.availabilityId);
+    if (!id || !availabilityId) {
+      return res.status(400).json({ message: 'اختر الموعد الجديد' });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const consultation = await tx.consultation.findUnique({ where: { id } });
+      if (!consultation) {
+        const error = new Error('طلب الاستشارة غير موجود');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (!ACTIVE_STATUSES.includes(consultation.status)) {
+        const error = new Error('لا يمكن تغيير موعد طلب منتهٍ أو ملغى');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const locked = await tx.specialistAvailability.updateMany({
+        where: { id: availabilityId, isAvailable: true, startAt: { gt: new Date() } },
+        data: { isAvailable: false },
+      });
+      if (locked.count !== 1) {
+        const error = new Error('الموعد الجديد غير متاح، اختر موعدًا آخر');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      if (consultation.availabilityId && consultation.availabilityId !== availabilityId) {
+        const old = await tx.specialistAvailability.findUnique({
+          where: { id: consultation.availabilityId },
+        });
+        if (old) {
+          await tx.specialistAvailability.update({
+            where: { id: old.id },
+            data: { isAvailable: old.startAt > new Date() },
+          });
+        }
+      }
+
+      const slot = await tx.specialistAvailability.findUnique({ where: { id: availabilityId } });
+      return tx.consultation.update({
+        where: { id },
+        data: {
+          availabilityId,
+          specialist: slot.specialist,
+          date: slot.startAt,
+          time: slot.startAt.toISOString().slice(11, 16),
+          status: 'CHANGED',
+        },
+        include: { availability: true },
+      });
     });
 
     return res.json(updated);
