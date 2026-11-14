@@ -103,11 +103,17 @@ model PaymentRequest {
   receiptUrl  String
   status      RequestStatus @default(PENDING)
   decidedAt   DateTime?
+  planId        Int?
+  durationType  String?
+  durationValue Int?
+  paymentMethod String   @default("cliq")
+  rejectionReason String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   subscription Subscription?
+  plan         SubscriptionPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
 }
@@ -333,4 +339,29 @@ model UserProgress {
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// خطط الاشتراك: يحددها الأدمن (الاسم، السعر، المدة) من لوحة التحكم
+model SubscriptionPlan {
+  id            Int      @id @default(autoincrement())
+  name          String
+  description   String?
+  price         String
+  currency      String   @default("JOD")
+  durationType  String   @default("months") // months | days
+  durationValue Int      @default(1)
+  isActive      Boolean  @default(true)
+  isFeatured    Boolean  @default(false)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  paymentRequests PaymentRequest[]
+}
+
+// إعدادات عامة يعدّلها الأدمن (مثل بيانات الدفع عبر CliQ)
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
 }

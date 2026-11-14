@@ -274,18 +274,35 @@ router.post(
   ),
   async (req, res, next) => {
     try {
-      const packageName = String(
+      let packageName = String(
         req.body.packageName || ''
       ).trim();
 
-      const price = String(
+      let price = String(
         req.body.price || ''
       ).trim();
 
-      const duration =
+      let duration =
         parsePlanDuration(
           packageName
         );
+
+      // الإصدارات الجديدة ترسل planId: السعر والمدة من خطة الأدمن.
+      let plan = null;
+      const planId = Number.parseInt(req.body.planId, 10);
+      if (Number.isInteger(planId)) {
+        plan = await prisma.subscriptionPlan.findUnique({ where: { id: planId } });
+        if (!plan || !plan.isActive) {
+          return res.status(400).json({ message: 'هذه الخطة غير متاحة حاليًا' });
+        }
+        packageName = plan.name;
+        price = `${plan.price} ${plan.currency === 'JOD' ? 'دينار' : plan.currency}`;
+        duration = {
+          type: plan.durationType,
+          value: plan.durationValue,
+          planMonths: plan.durationType === 'months' ? plan.durationValue : 0,
+        };
+      }
 
       if (
         !packageName ||
@@ -296,7 +313,7 @@ router.post(
           .status(400)
           .json({
             message:
-              'packageName, price and receipt are required',
+              'يرجى اختيار الباقة وإرفاق صورة إثبات الدفع',
           });
       }
 
@@ -317,7 +334,6 @@ router.post(
                 req.user.id,
               status:
                 'PENDING',
-              packageName,
             },
             orderBy: {
               createdAt:
@@ -330,7 +346,7 @@ router.post(
           .status(409)
           .json({
             message:
-              'A pending payment request already exists for this plan',
+              'لديك طلب اشتراك قيد المراجعة بالفعل، سيتم إشعارك عند قبوله',
             paymentRequest:
               existingPending,
           });
@@ -361,6 +377,10 @@ router.post(
                     packageName,
                     price,
                     receiptUrl,
+                    planId: plan ? plan.id : null,
+                    durationType: duration.type,
+                    durationValue: duration.value,
+                    paymentMethod: 'cliq',
                   },
                 });
 
@@ -423,6 +443,39 @@ router.get(
             },
           });
 
+      return res.json(requests);
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+/**
+ * طلبات الدفع الخاصة بالمستخدم وحالتها: قيد المراجعة / مقبول / مرفوض.
+ */
+router.get(
+  '/payment-requests/me',
+  auth,
+  async (req, res, next) => {
+    try {
+      const requests = await prisma.paymentRequest.findMany({
+        where: { userId: req.user.id },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        select: {
+          id: true,
+          packageName: true,
+          price: true,
+          status: true,
+          rejectionReason: true,
+          receiptUrl: true,
+          createdAt: true,
+          decidedAt: true,
+          subscription: {
+            select: { startDate: true, expiryDate: true, status: true },
+          },
+        },
+      });
       return res.json(requests);
     } catch (error) {
       return next(error);
@@ -533,10 +586,15 @@ router.post(
             }
 
             const duration =
-              parsePlanDuration(
-                paymentRequest
-                  .packageName
-              );
+              paymentRequest.durationType && paymentRequest.durationValue
+                ? {
+                    type: paymentRequest.durationType,
+                    value: paymentRequest.durationValue,
+                    planMonths: paymentRequest.durationType === 'months'
+                      ? paymentRequest.durationValue
+                      : 0,
+                  }
+                : parsePlanDuration(paymentRequest.packageName);
 
             if (!duration) {
               const error =
@@ -785,6 +843,8 @@ router.post(
                       'REJECTED',
                     decidedAt:
                       new Date(),
+                    rejectionReason:
+                      String(req.body?.reason || '').trim().slice(0, 300) || null,
                   },
                 });
 
