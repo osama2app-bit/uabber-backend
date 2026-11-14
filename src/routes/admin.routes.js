@@ -15,10 +15,18 @@ router.get('/users', auth, adminOnly, async (req, res) => {
       isActive: true,
       trialExpiryDate: true,
       createdAt: true,
+      _count: {
+        select: {
+          contentCustomizations: { where: { audioUrl: { not: null } } },
+        },
+      },
     },
   });
 
-  res.json(users);
+  res.json(users.map(({ _count, ...u }) => ({
+    ...u,
+    recordingsCount: _count?.contentCustomizations ?? 0,
+  })));
 });
 
 router.put('/users/:id/toggle', auth, adminOnly, async (req, res) => {
@@ -68,6 +76,39 @@ router.put('/users/:id/password', auth, adminOnly, async (req, res) => {
   } catch (error) {
     console.error('ADMIN RESET PASSWORD ERROR:', error);
     res.status(500).json({ message: 'تعذر تعيين كلمة المرور' });
+  }
+});
+
+// التسجيلات الصوتية والتعديلات الخاصة بحساب مستخدم (للمراجعة والتحكم)
+router.get('/users/:id/recordings', auth, adminOnly, async (req, res) => {
+  try {
+    const rows = await prisma.userContentCustomization.findMany({
+      where: { userId: Number(req.params.id), audioUrl: { not: null } },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true, contentKey: true, title: true, speechText: true,
+        imageUrl: true, audioUrl: true, updatedAt: true,
+      },
+    });
+    res.json(rows);
+  } catch (error) {
+    console.error('ADMIN USER RECORDINGS ERROR:', error);
+    res.status(500).json({ message: 'تعذر تحميل التسجيلات' });
+  }
+});
+
+// حذف تسجيل من حساب المستخدم (يعود العنصر للنطق الآلي أو صوت الأدمن)
+router.delete('/users/:id/recordings/:recordingId', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await prisma.userContentCustomization.updateMany({
+      where: { id: Number(req.params.recordingId), userId: Number(req.params.id) },
+      data: { audioUrl: null },
+    });
+    if (!result.count) return res.status(404).json({ message: 'التسجيل غير موجود' });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('ADMIN DELETE RECORDING ERROR:', error);
+    res.status(500).json({ message: 'تعذر حذف التسجيل' });
   }
 });
 

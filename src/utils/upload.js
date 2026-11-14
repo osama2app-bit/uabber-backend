@@ -14,15 +14,31 @@ function makeUpload(folder, fieldName) {
   }).single(fieldName);
 }
 
+// صيغ صوتية لا تعمل على iPhone (أو بعض أجهزة Android): نحوّلها إلى mp3.
+const UNSAFE_AUDIO = /(ogg|opus|webm|amr|3gpp|3gp|x-ms-wma|wma|flac)/i;
+
+function isAudio(file) {
+  return Boolean(file?.mimetype?.startsWith('audio/'))
+    || /\.(ogg|opus|webm|amr|3gp|wma|flac|m4a|mp3|aac|wav)$/i.test(file?.originalname || '');
+}
+
 function uploadToCloudinary(file, folder = 'uabber') {
   return new Promise((resolve, reject) => {
     if (!file) return resolve(null);
 
+    const options = {
+      folder: `uabber/${folder}`,
+      resource_type: 'auto',
+    };
+    if (isAudio(file)) {
+      options.resource_type = 'video'; // Cloudinary يعامل الصوت كـ video
+      if (UNSAFE_AUDIO.test(`${file.mimetype} ${file.originalname || ''}`)) {
+        options.format = 'mp3';
+      }
+    }
+
     const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: `uabber/${folder}`,
-        resource_type: 'auto',
-      },
+      options,
       (error, result) => {
         if (error) return reject(error);
         return resolve(result.secure_url);
@@ -38,6 +54,7 @@ async function fileUrl(req, folder, file) {
 }
 
 module.exports = {
+  isAudio,
   makeUpload,
   fileUrl,
   uploadToCloudinary,
