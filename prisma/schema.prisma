@@ -228,6 +228,12 @@ model EducationalQuestion {
   speechText   String
   correctTitle String
   options      Json
+  // choice = اختيار من صور/كلمات، true_false = صح وخطأ
+  type         String   @default("choice")
+  // صورة السؤال نفسه (اختيارية)
+  imageUrl     String?
+  // null = سؤال عام من الأدمن، رقم = سؤال أضافه مستخدم لحسابه فقط
+  ownerId      Int?
   isActive     Boolean  @default(true)
   sortOrder    Int      @default(0)
   isOverride   Boolean  @default(false)
@@ -239,6 +245,7 @@ model EducationalQuestion {
 
   @@index([unitId, itemKey])
   @@index([sourceKey])
+  @@index([ownerId])
 }
 
 model UserContentCustomization {
