@@ -46,6 +46,7 @@ model User {
   educationalContentUpdates EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
   educationalQuestionUpdates EducationalQuestion[] @relation("EducationalQuestionUpdatedBy")
   contentCustomizations UserContentCustomization[]
+  eventSequenceGroups   EventSequenceGroup[] @relation("EventSequenceOwner")
 }
 
 model Category {
@@ -262,4 +263,45 @@ model AdminNotification {
 
   @@unique([type, sourceId])
   @@index([isRead, createdAt])
+}
+
+// ===== تسلسل الأحداث (Event Sequences) =====
+// مجموعة مستقلة لها اسم وصورة غلاف ووصف اختياري، وبداخلها أحداث مرتبة.
+// ownerId = null  => مجموعة عامة يديرها الأدمن وتظهر لكل المستخدمين.
+// ownerId = <id>  => مجموعة خاصة بحساب المستخدم وتُستعاد على أي جهاز.
+model EventSequenceGroup {
+  id            Int      @id @default(autoincrement())
+  title         String
+  description   String?
+  coverImageUrl String?
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  ownerId       Int?
+  // مفتاح يرسله التطبيق لمنع تكرار المجموعة عند إعادة المزامنة
+  clientId      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  owner  User?                @relation("EventSequenceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  events EventSequenceEvent[]
+
+  @@unique([ownerId, clientId])
+  @@index([ownerId, isActive, sortOrder])
+}
+
+model EventSequenceEvent {
+  id          Int      @id @default(autoincrement())
+  groupId     Int
+  title       String
+  description String?
+  imageUrl    String?
+  audioUrl    String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  group EventSequenceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, sortOrder])
 }

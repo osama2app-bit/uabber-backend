@@ -20,6 +20,7 @@ app.use('/api/subscriptions',require('./routes/apple-iap.routes'));
 app.use('/api/subscriptions',require('./routes/subscriptions.routes'));
 app.use('/api/consultations',require('./routes/consultations.routes'));
 app.use('/api/journey-steps',require('./routes/journey.routes'));
+app.use('/api/event-sequences',require('./routes/event-sequences.routes'));
 app.use('/api/educational-content',require('./routes/educational-content.routes'));
 app.use('/api/user-customizations',require('./routes/user-customizations.routes'));
 app.use('/api/admin/notifications',require('./routes/notifications.routes'));
