@@ -9,6 +9,10 @@ async function auth(req, res, next) {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await prisma.user.findUnique({ where: { id: payload.id } });
     if (!user || !user.isActive) return res.status(401).json({ message: 'Unauthorized' });
+    // جلسة قديمة قبل تغيير كلمة المرور لم تعد صالحة
+    if (user.passwordChangedAt && payload.iat * 1000 < user.passwordChangedAt.getTime()) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
     req.user = user;
     next();
   } catch (_) { return res.status(401).json({ message: 'Unauthorized' }); }

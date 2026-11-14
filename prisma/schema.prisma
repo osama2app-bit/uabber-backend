@@ -37,6 +37,8 @@ model User {
   isActive        Boolean   @default(true)
   trialStartDate  DateTime  @default(now())
   trialExpiryDate DateTime
+  // آخر تغيير لكلمة المرور: أي جلسة أقدم منه تصبح غير صالحة
+  passwordChangedAt DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -47,6 +49,7 @@ model User {
   educationalQuestionUpdates EducationalQuestion[] @relation("EducationalQuestionUpdatedBy")
   contentCustomizations UserContentCustomization[]
   eventSequenceGroups   EventSequenceGroup[] @relation("EventSequenceOwner")
+  passwordResetCodes    PasswordResetCode[]
 }
 
 model Category {
@@ -304,4 +307,19 @@ model EventSequenceEvent {
   group EventSequenceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
   @@index([groupId, sortOrder])
+}
+
+// رموز استعادة كلمة المرور (تُخزَّن مشفّرة، صالحة لمدة قصيرة، ولمرة واحدة)
+model PasswordResetCode {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
