@@ -295,6 +295,12 @@ router.post(
         if (!plan || !plan.isActive) {
           return res.status(400).json({ message: 'هذه الخطة غير متاحة حاليًا' });
         }
+        if (plan.audience === 'specialist') {
+          const profile = await prisma.specialistProfile.findUnique({ where: { userId: req.user.id } });
+          if (!profile || !['APPROVED', 'PENDING'].includes(profile.status)) {
+            return res.status(400).json({ message: 'قدّم طلب الانضمام كأخصائي أولًا' });
+          }
+        }
         packageName = plan.name;
         price = `${plan.price} ${plan.currency === 'JOD' ? 'دينار' : plan.currency}`;
         duration = {
@@ -535,6 +541,54 @@ router.post(
                 404;
 
               throw error;
+            }
+
+            // اشتراك أخصائي: يمدّد ظهور الأخصائي بدل اشتراك العائلة
+            const requestPlan = paymentRequest.planId
+              ? await tx.subscriptionPlan.findUnique({ where: { id: paymentRequest.planId } })
+              : null;
+            if (requestPlan?.audience === 'specialist') {
+              if (paymentRequest.status === 'APPROVED') {
+                return { alreadyApproved: true, paymentRequest };
+              }
+              if (paymentRequest.status === 'REJECTED') {
+                const error = new Error('Rejected payment requests cannot be approved');
+                error.statusCode = 409;
+                throw error;
+              }
+              const profile = await tx.specialistProfile.findUnique({
+                where: { userId: paymentRequest.userId },
+              });
+              if (!profile) {
+                const error = new Error('صاحب الطلب ليس لديه ملف أخصائي');
+                error.statusCode = 409;
+                throw error;
+              }
+              const now = new Date();
+              const base = profile.subscriptionExpiry && profile.subscriptionExpiry > now
+                ? profile.subscriptionExpiry
+                : now;
+              const subscriptionExpiry = addPlanDuration(base, {
+                type: paymentRequest.durationType || requestPlan.durationType,
+                value: paymentRequest.durationValue || requestPlan.durationValue,
+              });
+              const updatedProfile = await tx.specialistProfile.update({
+                where: { id: profile.id },
+                data: { subscriptionExpiry },
+              });
+              const approvedRequest = await tx.paymentRequest.update({
+                where: { id: paymentRequest.id },
+                data: { status: 'APPROVED', decidedAt: now },
+              });
+              await tx.adminNotification.deleteMany({
+                where: { type: 'subscription', sourceId: paymentRequest.id },
+              });
+              return {
+                alreadyApproved: false,
+                specialist: true,
+                paymentRequest: approvedRequest,
+                specialistProfile: updatedProfile,
+              };
             }
 
             /*

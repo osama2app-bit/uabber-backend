@@ -42,6 +42,22 @@ function isKnownProduct(productId) {
 }
 
 /**
+ * منتجات آبل التي يضيفها الأدمن (حقل appleProductId في خطط الاشتراك)
+ * تُقبل أيضًا، حتى لا نحتاج تعديل الكود لكل اشتراك جديد.
+ */
+async function planForProduct(productId) {
+  if (APPLE_PLANS[productId]) return APPLE_PLANS[productId];
+  const plan = await prisma.subscriptionPlan.findUnique({
+    where: { appleProductId: productId },
+  });
+  if (!plan) return null;
+  return {
+    planName: `${plan.name} (App Store)`,
+    planMonths: plan.durationType === 'months' ? plan.durationValue : null,
+  };
+}
+
+/**
  * هل القيمة JWS من StoreKit 2؟
  *
  * JWS يتكون من:
@@ -220,7 +236,7 @@ async function verifyAppleReceipt(receipt) {
 
     const productId = transaction.productId;
 
-    if (!isKnownProduct(productId)) {
+    if (!isKnownProduct(productId) && !(await planForProduct(productId))) {
       const error = new Error(
         `Unknown Apple product: ${productId}`
       );
@@ -379,7 +395,7 @@ async function verifyLegacyAppleReceipt(receipt) {
   let best = null;
 
   for (const item of items) {
-    if (!isKnownProduct(item.product_id)) {
+    if (!isKnownProduct(item.product_id) && !(await planForProduct(item.product_id))) {
       continue;
     }
 
@@ -443,7 +459,7 @@ async function upsertAppleSubscription(
   tx = prisma
 ) {
   const plan =
-    APPLE_PLANS[verified.productId] || {
+    (await planForProduct(verified.productId)) || {
       planName: verified.productId,
       planMonths: null,
     };
