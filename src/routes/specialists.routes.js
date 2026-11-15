@@ -89,7 +89,14 @@ router.get('/', async (req, res, next) => {
 router.get('/me', async (req, res, next) => {
   try {
     const p = await prisma.specialistProfile.findUnique({ where: { userId: req.user.id } });
-    res.json(p ? ownProfile(p) : null);
+    if (!p) return res.json(null);
+    // طلب اشتراك أخصائي بانتظار مراجعة الإدارة (إن وجد)
+    const pending = await prisma.paymentRequest.findFirst({
+      where: { userId: req.user.id, status: 'PENDING', plan: { audience: 'specialist' } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, packageName: true, createdAt: true },
+    });
+    res.json({ ...ownProfile(p), pendingPayment: pending });
   } catch (error) {
     next(error);
   }
