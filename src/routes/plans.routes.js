@@ -47,16 +47,27 @@ function planInput(body, partial) {
   if (body.sortOrder !== undefined && Number.isInteger(Number(body.sortOrder))) {
     data.sortOrder = Number(body.sortOrder);
   }
+  if (!partial || body.audience !== undefined) {
+    const audience = String(body.audience || 'family');
+    if (!['family', 'specialist'].includes(audience)) errors.push('نوع الخطة غير صالح');
+    else data.audience = audience;
+  }
+  if (body.appleProductId !== undefined) {
+    const id = cleanText(body.appleProductId, 120);
+    if (id && !/^[A-Za-z0-9._-]+$/.test(id)) errors.push('معرّف منتج آبل غير صالح');
+    else data.appleProductId = id || null;
+  }
   return { data, errors };
 }
 
 plansRouter.use(auth);
 
 // الخطط المتاحة للمستخدم
-plansRouter.get('/', async (_req, res) => {
+plansRouter.get('/', async (req, res) => {
   try {
+    const audience = req.query.audience === 'specialist' ? 'specialist' : 'family';
     const plans = await prisma.subscriptionPlan.findMany({
-      where: { isActive: true },
+      where: { isActive: true, audience },
       orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
     });
     res.json(plans);
@@ -90,6 +101,7 @@ plansRouter.post('/', adminOnly, async (req, res) => {
     const plan = await prisma.subscriptionPlan.create({ data });
     res.status(201).json(plan);
   } catch (error) {
+    if (error.code === 'P2002') return res.status(409).json({ message: 'معرّف منتج آبل مستخدم في خطة أخرى' });
     console.error('CREATE PLAN ERROR:', error);
     res.status(500).json({ message: 'تعذر إنشاء الخطة' });
   }
@@ -106,6 +118,7 @@ plansRouter.put('/:id', adminOnly, async (req, res) => {
     res.json(plan);
   } catch (error) {
     if (error.code === 'P2025') return res.status(404).json({ message: 'الخطة غير موجودة' });
+    if (error.code === 'P2002') return res.status(409).json({ message: 'معرّف منتج آبل مستخدم في خطة أخرى' });
     console.error('UPDATE PLAN ERROR:', error);
     res.status(500).json({ message: 'تعذر تعديل الخطة' });
   }

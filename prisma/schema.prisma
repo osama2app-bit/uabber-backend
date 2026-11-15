@@ -51,6 +51,7 @@ model User {
   eventSequenceGroups   EventSequenceGroup[] @relation("EventSequenceOwner")
   passwordResetCodes    PasswordResetCode[]
   progress              UserProgress?
+  specialistProfile     SpecialistProfile?
 }
 
 model Category {
@@ -152,13 +153,17 @@ model SpecialistAvailability {
   startAt         DateTime
   durationMinutes Int
   isAvailable     Boolean        @default(true)
+  // الأخصائي صاحب الموعد (null = موعد قديم أضافه الأدمن)
+  specialistProfileId Int?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
   consultations   Consultation[]
+  specialistProfile SpecialistProfile? @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
 
-  @@unique([specialist, startAt, durationMinutes])
+  @@unique([specialistProfileId, startAt])
   @@index([isAvailable, startAt])
+  @@index([specialist, startAt])
 }
 
 model Consultation {
@@ -177,14 +182,20 @@ model Consultation {
   rejectionReason  String?
   date             DateTime?
   time             String?
+  specialistProfileId Int?
+  // رابط اجتماع Google Meet للجلسة
+  meetingUrl       String?
+  meetingEventId   String?
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 
   user             User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
   availability     SpecialistAvailability? @relation(fields: [availabilityId], references: [id], onDelete: Restrict)
+  specialistProfile SpecialistProfile? @relation(fields: [specialistProfileId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([availabilityId])
+  @@index([specialistProfileId])
 }
 
 model JourneyStep {
@@ -360,6 +371,10 @@ model SubscriptionPlan {
   isActive      Boolean  @default(true)
   isFeatured    Boolean  @default(false)
   sortOrder     Int      @default(0)
+  // family = اشتراك العائلة/الطفل، specialist = اشتراك الأخصائي لعرض استشاراته
+  audience      String   @default("family")
+  // معرّف المنتج في App Store Connect (لاشتراكات iPhone)
+  appleProductId String? @unique
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -371,4 +386,39 @@ model AppSetting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+enum SpecialistStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+// حساب الأخصائي/الطبيب: يقدّم طلبًا من حسابه، يوافق عليه الأدمن،
+// ويشترك ليظهر للمرضى ويستقبل الحجوزات.
+model SpecialistProfile {
+  id                 Int              @id @default(autoincrement())
+  userId             Int              @unique
+  displayName        String
+  specialty          String           // behavior | speech
+  title              String?
+  bio                String?
+  photoUrl           String?
+  licenseUrl         String?
+  phone              String?
+  sessionPriceJod    Int              @default(10)
+  sessionMinutes     Int              @default(45)
+  status             SpecialistStatus @default(PENDING)
+  rejectionReason    String?
+  subscriptionExpiry DateTime?
+  isVisible          Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user          User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slots         SpecialistAvailability[]
+  consultations Consultation[]
+
+  @@index([status, specialty])
 }
