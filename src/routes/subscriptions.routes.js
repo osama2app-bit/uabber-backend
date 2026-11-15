@@ -1136,6 +1136,7 @@ router.post(
 );
 
 module.exports = router;
+module.exports.addPlanDuration = addPlanDuration;
 module.exports.getAccessState =
   getAccessState;
 module.exports.expireStaleSubscriptions =

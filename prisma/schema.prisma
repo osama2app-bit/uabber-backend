@@ -29,29 +29,29 @@ enum ConsultationStatus {
 }
 
 model User {
-  id              Int       @id @default(autoincrement())
-  fullName        String
-  email           String    @unique
-  passwordHash    String
-  role            Role      @default(USER)
-  isActive        Boolean   @default(true)
-  trialStartDate  DateTime  @default(now())
-  trialExpiryDate DateTime
+  id                Int       @id @default(autoincrement())
+  fullName          String
+  email             String    @unique
+  passwordHash      String
+  role              Role      @default(USER)
+  isActive          Boolean   @default(true)
+  trialStartDate    DateTime  @default(now())
+  trialExpiryDate   DateTime
   // آخر تغيير لكلمة المرور: أي جلسة أقدم منه تصبح غير صالحة
   passwordChangedAt DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  subscriptions   Subscription[]
-  consultations   Consultation[]
-  paymentRequests PaymentRequest[]
-  educationalContentUpdates EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
-  educationalQuestionUpdates EducationalQuestion[] @relation("EducationalQuestionUpdatedBy")
-  contentCustomizations UserContentCustomization[]
-  eventSequenceGroups   EventSequenceGroup[] @relation("EventSequenceOwner")
-  passwordResetCodes    PasswordResetCode[]
-  progress              UserProgress?
-  specialistProfile     SpecialistProfile?
+  subscriptions              Subscription[]
+  consultations              Consultation[]
+  paymentRequests            PaymentRequest[]
+  educationalContentUpdates  EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
+  educationalQuestionUpdates EducationalQuestion[]        @relation("EducationalQuestionUpdatedBy")
+  contentCustomizations      UserContentCustomization[]
+  eventSequenceGroups        EventSequenceGroup[]         @relation("EventSequenceOwner")
+  passwordResetCodes         PasswordResetCode[]
+  progress                   UserProgress?
+  specialistProfile          SpecialistProfile?
 }
 
 model Category {
@@ -62,7 +62,7 @@ model Category {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items     Item[]
+  items Item[]
 }
 
 model Item {
@@ -72,12 +72,12 @@ model Item {
   speechText String
   imageUrl   String
   audioUrl   String?
-  isActive   Boolean @default(true)
+  isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  category   Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  variants   ItemVariant[]
+  category Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  variants ItemVariant[]
 }
 
 model ItemVariant {
@@ -91,28 +91,28 @@ model ItemVariant {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  item       Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
 }
 
 model PaymentRequest {
-  id          Int           @id @default(autoincrement())
-  userId      Int
-  userName    String?
-  userEmail   String?
-  packageName String
-  price       String
-  receiptUrl  String
-  status      RequestStatus @default(PENDING)
-  decidedAt   DateTime?
-  planId        Int?
-  durationType  String?
-  durationValue Int?
-  paymentMethod String   @default("cliq")
+  id              Int           @id @default(autoincrement())
+  userId          Int
+  userName        String?
+  userEmail       String?
+  packageName     String
+  price           String
+  receiptUrl      String
+  status          RequestStatus @default(PENDING)
+  decidedAt       DateTime?
+  planId          Int?
+  durationType    String?
+  durationValue   Int?
+  paymentMethod   String        @default("cliq")
   rejectionReason String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   subscription Subscription?
   plan         SubscriptionPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
 
@@ -148,17 +148,17 @@ model Subscription {
 }
 
 model SpecialistAvailability {
-  id              Int            @id @default(autoincrement())
-  specialist      String
-  startAt         DateTime
-  durationMinutes Int
-  isAvailable     Boolean        @default(true)
+  id                  Int      @id @default(autoincrement())
+  specialist          String
+  startAt             DateTime
+  durationMinutes     Int
+  isAvailable         Boolean  @default(true)
   // الأخصائي صاحب الموعد (null = موعد قديم أضافه الأدمن)
   specialistProfileId Int?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  consultations   Consultation[]
+  consultations     Consultation[]
   specialistProfile SpecialistProfile? @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
 
   @@unique([specialistProfileId, startAt])
@@ -167,31 +167,31 @@ model SpecialistAvailability {
 }
 
 model Consultation {
-  id               Int                    @id @default(autoincrement())
-  userId           Int?
-  availabilityId   Int?
-  userName         String?
-  userEmail        String?
-  phone            String?
-  specialist       String
-  message          String?
-  receiptUrl       String?
-  durationMinutes  Int?
-  priceJod         Int?
-  status           ConsultationStatus     @default(NEW)
-  rejectionReason  String?
-  date             DateTime?
-  time             String?
+  id                  Int                @id @default(autoincrement())
+  userId              Int?
+  availabilityId      Int?
+  userName            String?
+  userEmail           String?
+  phone               String?
+  specialist          String
+  message             String?
+  receiptUrl          String?
+  durationMinutes     Int?
+  priceJod            Int?
+  status              ConsultationStatus @default(NEW)
+  rejectionReason     String?
+  date                DateTime?
+  time                String?
   specialistProfileId Int?
   // رابط اجتماع Google Meet للجلسة
-  meetingUrl       String?
-  meetingEventId   String?
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
+  meetingUrl          String?
+  meetingEventId      String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 
-  user             User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
-  availability     SpecialistAvailability? @relation(fields: [availabilityId], references: [id], onDelete: Restrict)
-  specialistProfile SpecialistProfile? @relation(fields: [specialistProfileId], references: [id], onDelete: SetNull)
+  user              User?                   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  availability      SpecialistAvailability? @relation(fields: [availabilityId], references: [id], onDelete: Restrict)
+  specialistProfile SpecialistProfile?      @relation(fields: [specialistProfileId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([availabilityId])
@@ -207,8 +207,6 @@ model JourneyStep {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
-
-
 
 model EducationalContentOverride {
   id          String   @id
@@ -228,7 +226,6 @@ model EducationalContentOverride {
   @@index([unitId])
   @@index([targetKey])
 }
-
 
 model EducationalQuestion {
   id           String   @id
@@ -276,7 +273,6 @@ model UserContentCustomization {
   @@unique([userId, contentKey])
   @@index([userId])
 }
-
 
 model AdminNotification {
   id        Int      @id @default(autoincrement())
@@ -361,22 +357,22 @@ model UserProgress {
 
 // خطط الاشتراك: يحددها الأدمن (الاسم، السعر، المدة) من لوحة التحكم
 model SubscriptionPlan {
-  id            Int      @id @default(autoincrement())
-  name          String
-  description   String?
-  price         String
-  currency      String   @default("JOD")
-  durationType  String   @default("months") // months | days
-  durationValue Int      @default(1)
-  isActive      Boolean  @default(true)
-  isFeatured    Boolean  @default(false)
-  sortOrder     Int      @default(0)
+  id             Int      @id @default(autoincrement())
+  name           String
+  description    String?
+  price          String
+  currency       String   @default("JOD")
+  durationType   String   @default("months") // months | days
+  durationValue  Int      @default(1)
+  isActive       Boolean  @default(true)
+  isFeatured     Boolean  @default(false)
+  sortOrder      Int      @default(0)
   // family = اشتراك العائلة/الطفل، specialist = اشتراك الأخصائي لعرض استشاراته
-  audience      String   @default("family")
+  audience       String   @default("family")
   // معرّف المنتج في App Store Connect (لاشتراكات iPhone)
-  appleProductId String? @unique
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  appleProductId String?  @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   paymentRequests PaymentRequest[]
 }
@@ -401,7 +397,7 @@ model SpecialistProfile {
   id                 Int              @id @default(autoincrement())
   userId             Int              @unique
   displayName        String
-  specialty          String           // behavior | speech
+  specialty          String // behavior | speech
   title              String?
   bio                String?
   photoUrl           String?
@@ -421,4 +417,19 @@ model SpecialistProfile {
   consultations Consultation[]
 
   @@index([status, specialty])
+}
+
+// مشتريات آبل لاشتراك الأخصائي (لمنع احتساب العملية الواحدة مرتين)
+model AppleSpecialistPurchase {
+  id                    Int      @id @default(autoincrement())
+  transactionId         String   @unique
+  originalTransactionId String?
+  userId                Int
+  specialistProfileId   Int
+  productId             String
+  expiresAt             DateTime
+  environment           String?
+  createdAt             DateTime @default(now())
+
+  @@index([userId])
 }

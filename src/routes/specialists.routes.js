@@ -259,4 +259,4 @@ router.put('/admin/:id', adminOnly, async (req, res, next) => {
   }
 });
 
-module.exports = { router, SPECIALTIES, isBookable, isSubscriptionActive };
+module.exports = { router, SPECIALTIES, isBookable, isSubscriptionActive, ownProfile };

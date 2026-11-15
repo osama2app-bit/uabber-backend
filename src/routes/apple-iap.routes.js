@@ -2,9 +2,13 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const prisma = require('../config/prisma');
 const { auth } = require('../middleware/auth');
+const { addPlanDuration } = require('./subscriptions.routes');
+const { ownProfile } = require('./specialists.routes');
 const {
   isKnownProduct,
+  planForProduct,
   verifyAppleReceipt,
+  verifySpecialistPurchase,
   upsertAppleSubscription,
 } = require('../services/appleIap');
 
@@ -28,14 +32,23 @@ const verifyLimiter = rateLimit({
  */
 router.post('/apple/verify', auth, verifyLimiter, async (req, res, next) => {
   try {
-    const { receipt, productId } = req.body || {};
+    const { receipt, productId, transactionId } = req.body || {};
 
     if (typeof receipt !== 'string' || receipt.length < 20) {
       return res.status(400).json({ message: 'إيصال غير صالح' });
     }
 
-    if (productId && !isKnownProduct(productId)) {
+    // المنتجات الأساسية + أي منتج أضافه الأدمن في خطط الاشتراك
+    const productPlan = productId
+      ? (isKnownProduct(productId) ? { audience: 'family' } : await planForProduct(productId))
+      : null;
+    if (productId && !productPlan) {
       return res.status(400).json({ message: 'باقة غير معروفة' });
+    }
+
+    // اشتراك الأخصائي: يمدّد اشتراك ملف الأخصائي وليس اشتراك العائلة.
+    if (productPlan?.audience === 'specialist') {
+      return await verifySpecialist(req, res, { receipt, productId, transactionId });
     }
 
     const verified = await verifyAppleReceipt(receipt);
@@ -82,5 +95,78 @@ router.post('/apple/verify', auth, verifyLimiter, async (req, res, next) => {
     return next(error);
   }
 });
+
+async function verifySpecialist(req, res, { receipt, productId, transactionId }) {
+  const profile = await prisma.specialistProfile.findUnique({ where: { userId: req.user.id } });
+  if (!profile || !['APPROVED', 'PENDING'].includes(profile.status)) {
+    return res.status(400).json({ message: 'قدّم طلب الانضمام كأخصائي أولًا' });
+  }
+
+  const verified = await verifySpecialistPurchase(receipt, { productId, transactionId });
+  if (!verified) {
+    return res.status(400).json({ message: 'لم يتم العثور على عملية الشراء' });
+  }
+  const productPlan = await planForProduct(verified.productId);
+  if (productPlan?.audience !== 'specialist') {
+    return res.status(400).json({ message: 'هذه العملية ليست اشتراك أخصائي' });
+  }
+  if (verified.isCancelled) {
+    return res.status(400).json({ message: 'تم استرجاع هذه العملية من آبل' });
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const existing = await tx.appleSpecialistPurchase.findUnique({
+      where: { transactionId: verified.transactionId },
+    });
+    if (existing) {
+      if (existing.userId !== req.user.id) {
+        const error = new Error('عملية الشراء هذه مرتبطة بحساب آخر');
+        error.statusCode = 409;
+        throw error;
+      }
+      // سبق احتسابها (إعادة إرسال أو استعادة)
+      return tx.specialistProfile.findUnique({ where: { id: profile.id } });
+    }
+
+    const current = await tx.specialistProfile.findUnique({ where: { id: profile.id } });
+    const now = new Date();
+    const base = current.subscriptionExpiry && current.subscriptionExpiry > now
+      ? current.subscriptionExpiry
+      : now;
+    let expiresAt;
+    if (verified.expiresAt) {
+      // متجدد تلقائيًا: آبل تحدد تاريخ الانتهاء
+      expiresAt = verified.expiresAt > base ? verified.expiresAt : base;
+    } else {
+      // غير متجدد: المدة من خطة السيرفر (مثل 45 يومًا)، تُضاف للاشتراك الحالي
+      const { plan } = productPlan;
+      expiresAt = addPlanDuration(base, { type: plan.durationType, value: plan.durationValue });
+    }
+
+    await tx.appleSpecialistPurchase.create({
+      data: {
+        transactionId: verified.transactionId,
+        originalTransactionId: verified.originalTransactionId,
+        userId: req.user.id,
+        specialistProfileId: profile.id,
+        productId: verified.productId,
+        expiresAt,
+        environment: verified.environment || null,
+      },
+    });
+    return tx.specialistProfile.update({
+      where: { id: profile.id },
+      data: { subscriptionExpiry: expiresAt },
+    });
+  });
+
+  return res.json({
+    specialist: true,
+    source: 'apple',
+    productId: verified.productId,
+    expiryDate: result.subscriptionExpiry,
+    specialistProfile: ownProfile(result),
+  });
+}
 
 module.exports = router;

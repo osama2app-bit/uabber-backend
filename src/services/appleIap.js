@@ -54,6 +54,8 @@ async function planForProduct(productId) {
   return {
     planName: `${plan.name} (App Store)`,
     planMonths: plan.durationType === 'months' ? plan.durationValue : null,
+    audience: plan.audience,
+    plan,
   };
 }
 
@@ -302,7 +304,11 @@ async function verifyAppleReceipt(receipt) {
  *
  * هذا ليس المسار المستخدم مع StoreKit 2.
  */
-async function verifyLegacyAppleReceipt(receipt) {
+/**
+ * يستدعي verifyReceipt (إنتاج ثم Sandbox) ويتأكد من الـ bundle.
+ * يعيد { data, environment }.
+ */
+async function fetchLegacyReceipt(receipt) {
   if (!process.env.APPLE_SHARED_SECRET) {
     const error = new Error(
       'APPLE_SHARED_SECRET is not configured'
@@ -387,6 +393,12 @@ async function verifyLegacyAppleReceipt(receipt) {
     throw error;
   }
 
+  return { data, environment };
+}
+
+async function verifyLegacyAppleReceipt(receipt) {
+  const { data, environment } = await fetchLegacyReceipt(receipt);
+
   const items =
     Array.isArray(data.latest_receipt_info)
       ? data.latest_receipt_info
@@ -395,7 +407,11 @@ async function verifyLegacyAppleReceipt(receipt) {
   let best = null;
 
   for (const item of items) {
-    if (!isKnownProduct(item.product_id) && !(await planForProduct(item.product_id))) {
+    const itemPlan = isKnownProduct(item.product_id)
+      ? APPLE_PLANS[item.product_id]
+      : await planForProduct(item.product_id);
+    // اشتراكات الأخصائيين لها مسار منفصل ولا تمنح اشتراك العائلة.
+    if (!itemPlan || itemPlan.audience === 'specialist') {
       continue;
     }
 
@@ -652,8 +668,65 @@ async function refreshAppleSubscriptions(
   }
 }
 
+/**
+ * التحقق من شراء اشتراك أخصائي من آبل.
+ * يدعم الاشتراك غير المتجدد (Non-Renewing: المدة من خطة السيرفر، مثل 45 يومًا)
+ * والاشتراك المتجدد تلقائيًا (المدة من آبل).
+ *
+ * يعيد { productId, transactionId, originalTransactionId, expiresAt|null, isCancelled, environment }
+ */
+async function verifySpecialistPurchase(receipt, { productId, transactionId } = {}) {
+  if (!receipt) {
+    const error = new Error('Apple purchase verification data is empty');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (isJws(receipt)) {
+    const t = await verifyAppleJws(receipt);
+    return {
+      productId: t.productId,
+      transactionId: String(t.transactionId),
+      originalTransactionId: String(t.originalTransactionId || t.transactionId),
+      expiresAt: t.expiresDate ? new Date(Number(t.expiresDate)) : null,
+      purchasedAt: t.purchaseDate ? new Date(Number(t.purchaseDate)) : new Date(),
+      isCancelled: t.revocationDate != null,
+      environment: t.environment,
+    };
+  }
+
+  const { data, environment } = await fetchLegacyReceipt(receipt);
+  const items = [
+    ...(Array.isArray(data.latest_receipt_info) ? data.latest_receipt_info : []),
+    ...(Array.isArray(data.receipt?.in_app) ? data.receipt.in_app : []),
+  ].filter((i) => !productId || i.product_id === productId);
+
+  let item = transactionId
+    ? items.find((i) => String(i.transaction_id) === String(transactionId))
+    : null;
+  if (!item) {
+    // الأحدث شراءً
+    item = items.sort(
+      (a, b) => Number(b.purchase_date_ms || 0) - Number(a.purchase_date_ms || 0)
+    )[0];
+  }
+  if (!item) return null;
+
+  return {
+    productId: item.product_id,
+    transactionId: String(item.transaction_id),
+    originalTransactionId: String(item.original_transaction_id || item.transaction_id),
+    expiresAt: item.expires_date_ms ? new Date(Number(item.expires_date_ms)) : null,
+    purchasedAt: new Date(Number(item.purchase_date_ms || Date.now())),
+    isCancelled: Boolean(item.cancellation_date_ms),
+    environment,
+  };
+}
+
 module.exports = {
   APPLE_PLANS,
+  planForProduct,
+  verifySpecialistPurchase,
   isKnownProduct,
   verifyAppleReceipt,
   upsertAppleSubscription,
