@@ -29,15 +29,25 @@ function getTransporter() {
   return transporter;
 }
 
-async function sendMail({ to, subject, text, html }) {
+// المرسل يظهر باسم التطبيق: «أُعبر وأتعلّم <email>»
+// (إذا كتبت MAIL_FROM بصيغة "الاسم <email>" تُستخدم كما هي)
+function fromAddress() {
+  const raw = (process.env.MAIL_FROM || process.env.SMTP_USER || '').trim();
+  if (raw.includes('<')) return raw;
+  const name = process.env.MAIL_FROM_NAME || 'أُعبر وأتعلّم';
+  return { name, address: raw };
+}
+
+async function sendMail({ to, subject, text, html, attachments }) {
   const t = getTransporter();
   if (!t) throw new Error('MAIL_NOT_CONFIGURED');
   await t.sendMail({
-    from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    from: fromAddress(),
     to,
     subject,
     text,
     html,
+    attachments,
   });
 }
 

@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const prisma = require('../config/prisma');
 const { auth } = require('../middleware/auth');
 const { isMailConfigured, sendMail } = require('../utils/mailer');
+const { passwordResetEmail } = require('../utils/emailTemplates');
 
 const router = express.Router();
 
@@ -314,12 +315,7 @@ router.post('/forgot-password', resetLimiter, async (req, res, next) => {
     try {
       await sendMail({
         to: user.email,
-        subject: 'رمز استعادة كلمة المرور - أُعبر',
-        text: `رمز استعادة كلمة المرور: ${code}\nصالح لمدة ${RESET_CODE_TTL_MIN} دقيقة.\nإذا لم تطلب ذلك فتجاهل هذه الرسالة.`,
-        html: `<div dir="rtl" style="font-family:Arial,sans-serif;font-size:16px">
-<p>رمز استعادة كلمة المرور في تطبيق أُعبر:</p>
-<p style="font-size:30px;font-weight:bold;letter-spacing:6px">${code}</p>
-<p>الرمز صالح لمدة ${RESET_CODE_TTL_MIN} دقيقة. إذا لم تطلب ذلك فتجاهل هذه الرسالة.</p></div>`,
+        ...passwordResetEmail({ name: user.fullName, code, minutes: RESET_CODE_TTL_MIN }),
       });
     } catch (mailError) {
       console.error('RESET MAIL ERROR:', mailError.message);
