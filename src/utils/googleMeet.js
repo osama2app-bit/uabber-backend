@@ -64,11 +64,32 @@ async function createMeeting({ summary, description, start, minutes, attendees =
   if (!response.ok) {
     throw new Error(`GOOGLE_CALENDAR_FAILED: ${data.error?.message || response.status}`);
   }
-  const meetingUrl =
-    data.hangoutLink ||
-    data.conferenceData?.entryPoints?.find((e) => e.entryPointType === 'video')?.uri;
+  const linkOf = (event) =>
+    event.hangoutLink ||
+    event.conferenceData?.entryPoints?.find((e) => e.entryPointType === 'video')?.uri;
+  let meetingUrl = linkOf(data);
+
+  // أحيانًا يكون إنشاء الاجتماع «قيد التنفيذ»: نعيد قراءة الحدث بعد لحظات.
+  for (let attempt = 0; !meetingUrl && attempt < 3; attempt += 1) {
+    await new Promise((r) => setTimeout(r, 1200));
+    const again = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(data.id)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (again.ok) meetingUrl = linkOf(await again.json());
+  }
   if (!meetingUrl) throw new Error('GOOGLE_MEET_LINK_MISSING');
   return { meetingUrl, eventId: data.id };
+}
+
+/** حذف حدث من التقويم (للاجتماع التجريبي). */
+async function deleteMeeting(eventId) {
+  const token = await accessToken();
+  const calendarId = encodeURIComponent(process.env.GOOGLE_CALENDAR_ID || 'primary');
+  await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+  );
 }
 
 /** رابط Meet صالح؟ (للإدخال اليدوي) */
@@ -76,4 +97,4 @@ function isValidMeetUrl(url) {
   return /^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$/i.test(String(url || '').trim());
 }
 
-module.exports = { isMeetConfigured, createMeeting, isValidMeetUrl };
+module.exports = { isMeetConfigured, createMeeting, deleteMeeting, isValidMeetUrl };

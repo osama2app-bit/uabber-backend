@@ -3,7 +3,7 @@ const prisma = require('../config/prisma');
 const { auth, adminOnly } = require('../middleware/auth');
 const { makeUpload, fileUrl } = require('../utils/upload');
 const { SPECIALTIES, isBookable } = require('./specialists.routes');
-const { isMeetConfigured, createMeeting, isValidMeetUrl } = require('../utils/googleMeet');
+const { isMeetConfigured, createMeeting, deleteMeeting, isValidMeetUrl } = require('../utils/googleMeet');
 
 const router = express.Router();
 
@@ -184,6 +184,35 @@ async function ensureMeeting(consultationId) {
 
 router.get('/meeting-config', auth, (_req, res) => {
   res.json({ autoMeet: isMeetConfigured() });
+});
+
+// اختبار إعداد Google Meet من لوحة الأدمن: ينشئ اجتماعًا تجريبيًا ثم يحذفه.
+router.post('/meeting-test', auth, adminOnly, async (req, res) => {
+  if (!isMeetConfigured()) {
+    return res.status(400).json({
+      ok: false,
+      message: 'مفاتيح Google غير مضافة على السيرفر (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)',
+    });
+  }
+  try {
+    const { meetingUrl, eventId } = await createMeeting({
+      summary: 'اختبار Google Meet - أُعبر',
+      description: 'اجتماع تجريبي للتحقق من الإعداد، يُحذف تلقائيًا.',
+      start: new Date(Date.now() + 60 * 60 * 1000),
+      minutes: 15,
+      attendees: [],
+      requestId: `uabber-test-${Date.now()}`,
+    });
+    await deleteMeeting(eventId).catch(() => {});
+    return res.json({ ok: true, meetingUrl, message: 'الإعداد يعمل ✅ تم إنشاء اجتماع تجريبي وحذفه.' });
+  } catch (error) {
+    const raw = String(error.message || '');
+    let message = 'تعذر إنشاء الاجتماع، راجع المفاتيح';
+    if (raw.includes('invalid_grant')) message = 'GOOGLE_REFRESH_TOKEN منتهي أو غير صحيح، استخرجه من جديد';
+    else if (raw.includes('invalid_client') || raw.includes('unauthorized_client')) message = 'GOOGLE_CLIENT_ID أو GOOGLE_CLIENT_SECRET غير صحيح';
+    else if (raw.includes('has not been used') || raw.includes('disabled')) message = 'فعّل Google Calendar API في مشروع Google Cloud';
+    return res.status(502).json({ ok: false, message, detail: raw.slice(0, 300) });
+  }
 });
 
 // ---------------------------------------------------------------------------
