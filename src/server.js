@@ -33,3 +33,5 @@ app.use('/api/admin',require('./routes/admin.routes'));
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({message:'Server error'});});
 const port=process.env.PORT||4000;
 app.listen(port,()=>console.log(`Uabber API running on http://localhost:${port}`));
+// إعادة حذف اجتماعات Google Meet التي فشل حذفها سابقًا (كل ساعة)
+require('./services/meetingLifecycle').startMeetingCleanup();

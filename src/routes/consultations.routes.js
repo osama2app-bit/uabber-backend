@@ -3,7 +3,8 @@ const prisma = require('../config/prisma');
 const { auth, adminOnly } = require('../middleware/auth');
 const { makeUpload, fileUrl } = require('../utils/upload');
 const { SPECIALTIES, isBookable } = require('./specialists.routes');
-const { isMeetConfigured, createMeeting, deleteMeeting, isValidMeetUrl } = require('../utils/googleMeet');
+const { isMeetConfigured, createMeeting, isValidMeetUrl, newEventId } = require('../utils/googleMeet');
+const meetingLifecycle = require('../services/meetingLifecycle');
 
 const router = express.Router();
 
@@ -155,32 +156,27 @@ function sendError(res, next, error) {
   return next(error);
 }
 
-/** ينشئ اجتماع Meet للحجز إن كانت Google مفعّلة ولم يُنشأ بعد. */
+// دورة حياة اجتماع Google Meet (انظر services/meetingLifecycle.js).
+// الأغلفة التالية لا ترمي أخطاء أبدًا: فشل Google أو التنظيف لا يُفشل عملية الحجز.
 async function ensureMeeting(consultationId) {
-  if (!isMeetConfigured()) return null;
-  const c = await prisma.consultation.findUnique({
-    where: { id: consultationId },
-    include: { specialistProfile: { include: { user: { select: { email: true } } } } },
-  });
-  if (!c || c.meetingUrl || !c.date) return c;
   try {
-    const { meetingUrl, eventId } = await createMeeting({
-      summary: `استشارة ${c.specialist} - ${c.userName || ''}`,
-      description: `جلسة عبر تطبيق أُعبر وأتعلّم\nالأخصائي: ${c.specialistProfile?.displayName || c.specialist}\nالمريض: ${c.userName || ''}`,
-      start: c.date,
-      minutes: c.durationMinutes || SESSION_DURATION_MINUTES,
-      attendees: [c.userEmail, c.specialistProfile?.user?.email],
-      requestId: `uabber-consultation-${c.id}-${Date.now()}`,
-    });
-    return prisma.consultation.update({
-      where: { id: c.id },
-      data: { meetingUrl, meetingEventId: eventId },
-    });
+    return await meetingLifecycle.ensureMeeting(consultationId);
   } catch (error) {
-    console.error('GOOGLE MEET ERROR:', error.message);
-    return c;
+    console.error(`GOOGLE MEET ERROR consultation=${consultationId}:`, error.message);
+    return null;
   }
 }
+
+async function releaseMeeting(consultationId, reason) {
+  try {
+    return await meetingLifecycle.releaseMeeting(consultationId, { reason });
+  } catch (error) {
+    console.error(`GOOGLE MEET RELEASE ERROR consultation=${consultationId}:`, error.message);
+    return null;
+  }
+}
+
+const MEETING_STATUSES = new Set(['ACCEPTED', 'CHANGED', 'PAYMENT_CONFIRMED']);
 
 router.get('/meeting-config', auth, (_req, res) => {
   res.json({ autoMeet: isMeetConfigured() });
@@ -194,18 +190,23 @@ router.post('/meeting-test', auth, adminOnly, async (req, res) => {
       message: 'مفاتيح Google غير مضافة على السيرفر (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)',
     });
   }
+  let created;
   try {
-    const { meetingUrl, eventId } = await createMeeting({
+    const eventId = newEventId(0);
+    created = await createMeeting({
       summary: 'اختبار Google Meet - أُعبر',
       description: 'اجتماع تجريبي للتحقق من الإعداد، يُحذف تلقائيًا.',
       start: new Date(Date.now() + 60 * 60 * 1000),
       minutes: 15,
       attendees: [],
-      requestId: `uabber-test-${Date.now()}`,
+      eventId,
+      requestId: eventId,
     });
-    await deleteMeeting(eventId).catch(() => {});
-    return res.json({ ok: true, meetingUrl, message: 'الإعداد يعمل ✅ تم إنشاء اجتماع تجريبي وحذفه.' });
   } catch (error) {
+    if (error.eventId) {
+      // أُنشئ الحدث دون رابط: لا نتركه في التقويم
+      await meetingLifecycle.deleteEvent(error.eventId, { consultationId: null, reason: 'test' });
+    }
     const raw = String(error.message || '');
     let message = 'تعذر إنشاء الاجتماع، راجع المفاتيح';
     if (raw.includes('invalid_grant')) message = 'GOOGLE_REFRESH_TOKEN منتهي أو غير صحيح، استخرجه من جديد';
@@ -213,6 +214,29 @@ router.post('/meeting-test', auth, adminOnly, async (req, res) => {
     else if (raw.includes('has not been used') || raw.includes('disabled')) message = 'فعّل Google Calendar API في مشروع Google Cloud';
     return res.status(502).json({ ok: false, message, detail: raw.slice(0, 300) });
   }
+
+  // تنظيف الاجتماع التجريبي: لا نخفي فشل الحذف
+  const cleanup = await meetingLifecycle.deleteEvent(created.eventId, { consultationId: null, reason: 'test' });
+  // فرصة لإعادة حذف أي اجتماعات عالقة سابقًا
+  const pendingCleanup = await meetingLifecycle.retryPendingDeletions().catch(() => null);
+
+  if (!cleanup.ok) {
+    return res.json({
+      ok: true,
+      cleanupFailed: true,
+      eventId: created.eventId,
+      pendingCleanup,
+      message:
+        `الإنشاء يعمل ✅ لكن تعذّر حذف الاجتماع التجريبي من التقويم (eventId: ${created.eventId}). ` +
+        (cleanup.tracked ? 'سيُعاد حذفه تلقائيًا.' : 'احذفه يدويًا من Google Calendar.'),
+    });
+  }
+  return res.json({
+    ok: true,
+    meetingUrl: created.meetingUrl,
+    pendingCleanup,
+    message: 'الإعداد يعمل ✅ تم إنشاء اجتماع تجريبي وحذفه.',
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -749,12 +773,16 @@ router.put('/:id/status', auth, async (req, res, next) => {
       return consultation;
     });
 
-    // عند القبول ننشئ رابط Google Meet تلقائيًا (إن كانت Google مفعّلة)
-    const final = ['ACCEPTED', 'CHANGED', 'PAYMENT_CONFIRMED'].includes(status)
-      ? await ensureMeeting(id)
-      : updated;
+    // بعد حفظ الحالة (فشل Google لا يلغي تغيير الحالة):
+    // - القبول/التأكيد: إنشاء اجتماع Google Meet (إن كانت Google مفعّلة)
+    // - الرفض/الإلغاء: حذف الاجتماع وإرسال إشعار إلغاء للمدعوين
+    if (MEETING_STATUSES.has(status)) {
+      await ensureMeeting(id);
+    } else if (reusableStatuses.has(status)) {
+      await releaseMeeting(id, status.toLowerCase());
+    }
 
-    return res.json(await prisma.consultation.findUnique({ where: { id: final?.id || id }, include: consultationInclude }));
+    return res.json(await prisma.consultation.findUnique({ where: { id: updated.id }, include: consultationInclude }));
   } catch (error) {
     return sendError(res, next, error);
   }
@@ -765,13 +793,14 @@ router.put('/:id/meeting', auth, async (req, res, next) => {
   try {
     const id = asPositiveInt(req.params.id);
     if (!id) return res.status(400).json({ message: 'رقم الطلب غير صالح' });
-    await loadManaged(req, id);
+    const { consultation } = await loadManaged(req, id);
 
     if (req.body.auto === true || req.body.auto === 'true') {
       if (!isMeetConfigured()) {
         return res.status(400).json({ message: 'إنشاء الاجتماع التلقائي غير مفعّل، أضف رابط Meet يدويًا' });
       }
-      await prisma.consultation.update({ where: { id }, data: { meetingUrl: null, meetingEventId: null } });
+      // نحذف الاجتماع السابق أولًا (لا نمسح معرّفه قبل حذفه)، ثم ننشئ الجديد
+      await releaseMeeting(id, 'regenerate');
       const created = await ensureMeeting(id);
       if (!created?.meetingUrl) {
         return res.status(502).json({ message: 'تعذر إنشاء اجتماع Google Meet، حاول مرة أخرى' });
@@ -781,7 +810,11 @@ router.put('/:id/meeting', auth, async (req, res, next) => {
       if (url && !isValidMeetUrl(url)) {
         return res.status(400).json({ message: 'رابط Google Meet غير صالح (مثال: https://meet.google.com/abc-defg-hij)' });
       }
-      await prisma.consultation.update({ where: { id }, data: { meetingUrl: url || null } });
+      if (url !== (consultation.meetingUrl || '')) {
+        // استبدال اجتماع تلقائي برابط يدوي: نحذف حدث التقويم القديم ودعواته
+        if (consultation.meetingEventId) await releaseMeeting(id, 'manual-link');
+        await prisma.consultation.update({ where: { id }, data: { meetingUrl: url || null } });
+      }
     }
 
     return res.json(await prisma.consultation.findUnique({ where: { id }, include: consultationInclude }));
@@ -835,15 +868,17 @@ router.put('/:id/reschedule', auth, async (req, res, next) => {
           date: target.startAt,
           time: target.startAt.toISOString().slice(11, 16),
           status: 'CHANGED',
-          // الاجتماع القديم كان لموعد سابق
+          // الرابط القديم كان لموعد سابق. meetingEventId يبقى حتى نحذف
+          // اجتماعه من Google (releaseMeeting أدناه).
           meetingUrl: null,
-          meetingEventId: null,
         },
       });
     });
 
-    const withMeeting = await ensureMeeting(updated.id);
-    return res.json(await prisma.consultation.findUnique({ where: { id: withMeeting?.id || id }, include: consultationInclude }));
+    // احذف اجتماع الموعد القديم (مع إشعار إلغاء)، ثم أنشئ اجتماعًا للموعد الجديد
+    await releaseMeeting(updated.id, 'rescheduled');
+    await ensureMeeting(updated.id);
+    return res.json(await prisma.consultation.findUnique({ where: { id: updated.id }, include: consultationInclude }));
   } catch (error) {
     return sendError(res, next, error);
   }
