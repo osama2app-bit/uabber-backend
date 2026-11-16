@@ -167,27 +167,36 @@ model SpecialistAvailability {
 }
 
 model Consultation {
-  id                  Int                @id @default(autoincrement())
-  userId              Int?
-  availabilityId      Int?
-  userName            String?
-  userEmail           String?
-  phone               String?
-  specialist          String
-  message             String?
-  receiptUrl          String?
-  durationMinutes     Int?
-  priceJod            Int?
-  status              ConsultationStatus @default(NEW)
-  rejectionReason     String?
-  date                DateTime?
-  time                String?
-  specialistProfileId Int?
+  id                   Int                @id @default(autoincrement())
+  userId               Int?
+  availabilityId       Int?
+  userName             String?
+  userEmail            String?
+  phone                String?
+  specialist           String
+  message              String?
+  receiptUrl           String?
+  durationMinutes      Int?
+  priceJod             Int?
+  status               ConsultationStatus @default(NEW)
+  rejectionReason      String?
+  date                 DateTime?
+  time                 String?
+  specialistProfileId  Int?
   // رابط اجتماع Google Meet للجلسة
-  meetingUrl          String?
-  meetingEventId      String?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  meetingUrl           String?
+  // (قديم) معرّف حدث Google Calendar من نظام الإنشاء التلقائي الملغى — لا يُستخدم
+  meetingEventId       String?
+  // إرسال رابط الاجتماع للمريض عبر واتساب
+  // الحالة: SENDING | SENT (أُرسل عبر API) | FAILED | READY (رسالة جاهزة لفتح واتساب) | OPENED (فُتح واتساب على جهاز الأخصائي)
+  meetingLinkStatus    String?
+  meetingLinkChannel   String? // whatsapp_api | whatsapp_link
+  meetingLinkSentUrl   String? // الرابط الذي أُرسل فعلًا
+  meetingLinkSentAt    DateTime?
+  meetingLinkAttemptAt DateTime?
+  meetingLinkError     String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   user              User?                   @relation(fields: [userId], references: [id], onDelete: SetNull)
   availability      SpecialistAvailability? @relation(fields: [availabilityId], references: [id], onDelete: Restrict)
@@ -434,7 +443,8 @@ model AppleSpecialistPurchase {
   @@index([userId])
 }
 
-// اجتماعات Google Meet فشل حذفها (لإعادة المحاولة لاحقًا بدل فقدان معرّفها)
+// (قديم) اجتماعات Google Meet فشل حذفها — من نظام الإنشاء التلقائي الملغى.
+// يُبقى الجدول حتى لا تضيع بيانات موجودة، ولا يستخدمه الكود حاليًا.
 model PendingMeetingDeletion {
   id             Int      @id @default(autoincrement())
   eventId        String   @unique
