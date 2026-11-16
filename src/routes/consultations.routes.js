@@ -3,8 +3,8 @@ const prisma = require('../config/prisma');
 const { auth, adminOnly } = require('../middleware/auth');
 const { makeUpload, fileUrl } = require('../utils/upload');
 const { SPECIALTIES, isBookable } = require('./specialists.routes');
-const { isMeetConfigured, createMeeting, isValidMeetUrl, newEventId } = require('../utils/googleMeet');
-const meetingLifecycle = require('../services/meetingLifecycle');
+const { normalizeMeetUrl, whatsappPhone, formatSessionDate, buildMeetingMessage } = require('../utils/meetingLink');
+const whatsapp = require('../services/whatsapp');
 
 const router = express.Router();
 
@@ -156,87 +156,21 @@ function sendError(res, next, error) {
   return next(error);
 }
 
-// دورة حياة اجتماع Google Meet (انظر services/meetingLifecycle.js).
-// الأغلفة التالية لا ترمي أخطاء أبدًا: فشل Google أو التنظيف لا يُفشل عملية الحجز.
-async function ensureMeeting(consultationId) {
-  try {
-    return await meetingLifecycle.ensureMeeting(consultationId);
-  } catch (error) {
-    console.error(`GOOGLE MEET ERROR consultation=${consultationId}:`, error.message);
-    return null;
-  }
-}
-
-async function releaseMeeting(consultationId, reason) {
-  try {
-    return await meetingLifecycle.releaseMeeting(consultationId, { reason });
-  } catch (error) {
-    console.error(`GOOGLE MEET RELEASE ERROR consultation=${consultationId}:`, error.message);
-    return null;
-  }
-}
-
+// الاجتماعات: لا يوجد أي إنشاء تلقائي. الأخصائي ينشئ اجتماع Google Meet بنفسه،
+// يلصق الرابط، ويرسله للمريض عبر واتساب (انظر مسارات /:id/meeting أدناه).
 const MEETING_STATUSES = new Set(['ACCEPTED', 'CHANGED', 'PAYMENT_CONFIRMED']);
+// منع الإرسال المكرر: محاولة واحدة كل 10 ثوانٍ لنفس الحجز
+const SEND_COOLDOWN_MS = Number(process.env.MEETING_SEND_COOLDOWN_MS || 10 * 1000);
+const AUTO_MEET_DISABLED =
+  'الإنشاء التلقائي للاجتماعات متوقف. أنشئ الاجتماع من Google Meet والصق الرابط ثم أرسله للمريض عبر واتساب.';
 
+// لتوافق نسخ التطبيق القديمة
 router.get('/meeting-config', auth, (_req, res) => {
-  res.json({ autoMeet: isMeetConfigured() });
+  res.json({ autoMeet: false, whatsappApi: whatsapp.isWhatsAppApiConfigured() });
 });
 
-// اختبار إعداد Google Meet من لوحة الأدمن: ينشئ اجتماعًا تجريبيًا ثم يحذفه.
-router.post('/meeting-test', auth, adminOnly, async (req, res) => {
-  if (!isMeetConfigured()) {
-    return res.status(400).json({
-      ok: false,
-      message: 'مفاتيح Google غير مضافة على السيرفر (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)',
-    });
-  }
-  let created;
-  try {
-    const eventId = newEventId(0);
-    created = await createMeeting({
-      summary: 'اختبار Google Meet - أُعبر',
-      description: 'اجتماع تجريبي للتحقق من الإعداد، يُحذف تلقائيًا.',
-      start: new Date(Date.now() + 60 * 60 * 1000),
-      minutes: 15,
-      attendees: [],
-      eventId,
-      requestId: eventId,
-    });
-  } catch (error) {
-    if (error.eventId) {
-      // أُنشئ الحدث دون رابط: لا نتركه في التقويم
-      await meetingLifecycle.deleteEvent(error.eventId, { consultationId: null, reason: 'test' });
-    }
-    const raw = String(error.message || '');
-    let message = 'تعذر إنشاء الاجتماع، راجع المفاتيح';
-    if (raw.includes('invalid_grant')) message = 'GOOGLE_REFRESH_TOKEN منتهي أو غير صحيح، استخرجه من جديد';
-    else if (raw.includes('invalid_client') || raw.includes('unauthorized_client')) message = 'GOOGLE_CLIENT_ID أو GOOGLE_CLIENT_SECRET غير صحيح';
-    else if (raw.includes('has not been used') || raw.includes('disabled')) message = 'فعّل Google Calendar API في مشروع Google Cloud';
-    return res.status(502).json({ ok: false, message, detail: raw.slice(0, 300) });
-  }
-
-  // تنظيف الاجتماع التجريبي: لا نخفي فشل الحذف
-  const cleanup = await meetingLifecycle.deleteEvent(created.eventId, { consultationId: null, reason: 'test' });
-  // فرصة لإعادة حذف أي اجتماعات عالقة سابقًا
-  const pendingCleanup = await meetingLifecycle.retryPendingDeletions().catch(() => null);
-
-  if (!cleanup.ok) {
-    return res.json({
-      ok: true,
-      cleanupFailed: true,
-      eventId: created.eventId,
-      pendingCleanup,
-      message:
-        `الإنشاء يعمل ✅ لكن تعذّر حذف الاجتماع التجريبي من التقويم (eventId: ${created.eventId}). ` +
-        (cleanup.tracked ? 'سيُعاد حذفه تلقائيًا.' : 'احذفه يدويًا من Google Calendar.'),
-    });
-  }
-  return res.json({
-    ok: true,
-    meetingUrl: created.meetingUrl,
-    pendingCleanup,
-    message: 'الإعداد يعمل ✅ تم إنشاء اجتماع تجريبي وحذفه.',
-  });
+router.post('/meeting-test', auth, adminOnly, (_req, res) => {
+  res.status(410).json({ ok: false, message: AUTO_MEET_DISABLED });
 });
 
 // ---------------------------------------------------------------------------
@@ -773,22 +707,35 @@ router.put('/:id/status', auth, async (req, res, next) => {
       return consultation;
     });
 
-    // بعد حفظ الحالة (فشل Google لا يلغي تغيير الحالة):
-    // - القبول/التأكيد: إنشاء اجتماع Google Meet (إن كانت Google مفعّلة)
-    // - الرفض/الإلغاء: حذف الاجتماع وإرسال إشعار إلغاء للمدعوين
-    if (MEETING_STATUSES.has(status)) {
-      await ensureMeeting(id);
-    } else if (reusableStatuses.has(status)) {
-      await releaseMeeting(id, status.toLowerCase());
-    }
-
+    // لا إنشاء/حذف اجتماعات تلقائيًا: رابط الاجتماع اليدوي يبقى كما هو.
     return res.json(await prisma.consultation.findUnique({ where: { id: updated.id }, include: consultationInclude }));
   } catch (error) {
     return sendError(res, next, error);
   }
 });
 
-// رابط الاجتماع: يدوي (رابط Meet) أو تلقائي عبر Google
+// بيانات حالة إرسال الرابط تُعاد ضبطها عند تغيير الرابط أو الموعد
+const RESET_SEND_STATE = {
+  meetingLinkStatus: null,
+  meetingLinkChannel: null,
+  meetingLinkSentUrl: null,
+  meetingLinkSentAt: null,
+  meetingLinkError: null,
+};
+
+function readMeetUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { url: null };
+  const url = normalizeMeetUrl(raw);
+  if (!url) {
+    throw new HttpError(400, 'رابط Google Meet غير صالح (مثال: https://meet.google.com/abc-defg-hij)');
+  }
+  return { url };
+}
+
+const loadFull = (id) => prisma.consultation.findUnique({ where: { id }, include: consultationInclude });
+
+// حفظ/تعديل رابط الاجتماع يدويًا (بدون إرسال)
 router.put('/:id/meeting', auth, async (req, res, next) => {
   try {
     const id = asPositiveInt(req.params.id);
@@ -796,28 +743,155 @@ router.put('/:id/meeting', auth, async (req, res, next) => {
     const { consultation } = await loadManaged(req, id);
 
     if (req.body.auto === true || req.body.auto === 'true') {
-      if (!isMeetConfigured()) {
-        return res.status(400).json({ message: 'إنشاء الاجتماع التلقائي غير مفعّل، أضف رابط Meet يدويًا' });
-      }
-      // نحذف الاجتماع السابق أولًا (لا نمسح معرّفه قبل حذفه)، ثم ننشئ الجديد
-      await releaseMeeting(id, 'regenerate');
-      const created = await ensureMeeting(id);
-      if (!created?.meetingUrl) {
-        return res.status(502).json({ message: 'تعذر إنشاء اجتماع Google Meet، حاول مرة أخرى' });
-      }
-    } else {
-      const url = String(req.body.meetingUrl || '').trim();
-      if (url && !isValidMeetUrl(url)) {
-        return res.status(400).json({ message: 'رابط Google Meet غير صالح (مثال: https://meet.google.com/abc-defg-hij)' });
-      }
-      if (url !== (consultation.meetingUrl || '')) {
-        // استبدال اجتماع تلقائي برابط يدوي: نحذف حدث التقويم القديم ودعواته
-        if (consultation.meetingEventId) await releaseMeeting(id, 'manual-link');
-        await prisma.consultation.update({ where: { id }, data: { meetingUrl: url || null } });
+      return res.status(400).json({ message: AUTO_MEET_DISABLED });
+    }
+    const { url } = readMeetUrl(req.body.meetingUrl);
+    if ((url || null) !== (consultation.meetingUrl || null)) {
+      await prisma.consultation.update({
+        where: { id },
+        data: { meetingUrl: url, ...RESET_SEND_STATE },
+      });
+    }
+    return res.json(await loadFull(id));
+  } catch (error) {
+    return sendError(res, next, error);
+  }
+});
+
+/**
+ * حفظ الرابط وإرساله للمريض عبر واتساب.
+ * body: { meetingUrl?: string, resend?: boolean }
+ * الرد: { consultation, whatsapp }
+ *   whatsapp.mode = 'api'  → { ok, error? } إرسال فعلي من السيرفر
+ *   whatsapp.mode = 'link' → { url } رابط wa.me يفتحه التطبيق (الأخصائي يضغط إرسال)
+ */
+router.post('/:id/meeting/send', auth, async (req, res, next) => {
+  try {
+    const id = asPositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ message: 'رقم الطلب غير صالح' });
+    const { consultation } = await loadManaged(req, id);
+    if (!MEETING_STATUSES.has(consultation.status)) {
+      return res.status(409).json({ message: 'إرسال الرابط متاح للحجوزات المقبولة فقط' });
+    }
+
+    // 1) حفظ الرابط (إن أُرسل رابط جديد)
+    const provided = req.body.meetingUrl !== undefined;
+    const url = provided ? readMeetUrl(req.body.meetingUrl).url : consultation.meetingUrl;
+    if (!url) return res.status(400).json({ message: 'أدخل رابط Google Meet أولًا' });
+    if (url !== consultation.meetingUrl) {
+      await prisma.consultation.update({ where: { id }, data: { meetingUrl: url, ...RESET_SEND_STATE } });
+    }
+
+    const phone = whatsappPhone(consultation.phone);
+    if (!phone) {
+      return res.status(422).json({
+        message: 'تم حفظ الرابط، لكن لا يوجد رقم هاتف صالح للمريض لإرساله عبر واتساب',
+        consultation: await loadFull(id),
+      });
+    }
+
+    // 2) أُرسل نفس الرابط مسبقًا عبر API ولم يُطلب إعادة الإرسال: لا تكرار
+    const fresh = await prisma.consultation.findUnique({ where: { id } });
+    const resend = req.body.resend === true || req.body.resend === 'true';
+    if (!resend && fresh.meetingLinkStatus === 'SENT' && fresh.meetingLinkSentUrl === url) {
+      return res.json({ consultation: await loadFull(id), whatsapp: { mode: 'api', ok: true, alreadySent: true } });
+    }
+
+    // 3) قفل ذرّي ضد الضغط المتكرر/الطلبات المتزامنة
+    const now = new Date();
+    const claim = await prisma.consultation.updateMany({
+      where: {
+        id,
+        OR: [
+          { meetingLinkAttemptAt: null },
+          { meetingLinkAttemptAt: { lt: new Date(now.getTime() - SEND_COOLDOWN_MS) } },
+        ],
+      },
+      data: { meetingLinkAttemptAt: now, meetingLinkStatus: 'SENDING', meetingLinkError: null },
+    });
+    if (claim.count !== 1) {
+      return res.status(429).json({ message: 'تم إرسال طلب قبل لحظات، انتظر قليلًا ثم أعد المحاولة' });
+    }
+
+    const full = await loadFull(id);
+    const params = {
+      patientName: full.userName || '',
+      specialistName: full.specialistProfile?.displayName || full.specialist,
+      dateText: formatSessionDate(full.date),
+      url,
+    };
+
+    // 4أ) إرسال تلقائي عبر WhatsApp Cloud API
+    if (whatsapp.isWhatsAppApiConfigured()) {
+      try {
+        await whatsapp.sendMeetingTemplate({ to: phone, ...params });
+        await prisma.consultation.update({
+          where: { id },
+          data: {
+            meetingLinkStatus: 'SENT',
+            meetingLinkChannel: 'whatsapp_api',
+            meetingLinkSentUrl: url,
+            meetingLinkSentAt: new Date(),
+            meetingLinkError: null,
+          },
+        });
+        return res.json({ consultation: await loadFull(id), whatsapp: { mode: 'api', ok: true } });
+      } catch (error) {
+        console.error(`WHATSAPP SEND FAILED consultation=${id}:`, error.message);
+        await prisma.consultation.update({
+          where: { id },
+          data: {
+            meetingLinkStatus: 'FAILED',
+            meetingLinkChannel: 'whatsapp_api',
+            meetingLinkError: String(error.message).slice(0, 300),
+          },
+        });
+        // الرابط محفوظ، والإرسال فشل: يمكن إعادة المحاولة
+        return res.json({
+          consultation: await loadFull(id),
+          whatsapp: { mode: 'api', ok: false, error: 'تعذر إرسال رسالة واتساب، الرابط محفوظ ويمكنك إعادة الإرسال' },
+        });
       }
     }
 
-    return res.json(await prisma.consultation.findUnique({ where: { id }, include: consultationInclude }));
+    // 4ب) بدون WhatsApp API: رسالة جاهزة تُفتح في واتساب على جهاز الأخصائي
+    const text = buildMeetingMessage({
+      patientName: params.patientName,
+      specialistName: params.specialistName,
+      date: full.date,
+      url,
+    });
+    await prisma.consultation.update({
+      where: { id },
+      data: { meetingLinkStatus: 'READY', meetingLinkChannel: 'whatsapp_link', meetingLinkError: null },
+    });
+    return res.json({
+      consultation: await loadFull(id),
+      whatsapp: { mode: 'link', url: whatsapp.clickToChatUrl(phone, text), phone },
+    });
+  } catch (error) {
+    return sendError(res, next, error);
+  }
+});
+
+// يسجّل أن التطبيق فتح واتساب بالرسالة الجاهزة (وضع wa.me). لا يعني تأكيد الإرسال.
+router.post('/:id/meeting/opened', auth, async (req, res, next) => {
+  try {
+    const id = asPositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ message: 'رقم الطلب غير صالح' });
+    const { consultation } = await loadManaged(req, id);
+    if (!consultation.meetingUrl) return res.status(400).json({ message: 'لا يوجد رابط اجتماع' });
+    await prisma.consultation.update({
+      where: { id },
+      data: {
+        meetingLinkStatus: 'OPENED',
+        meetingLinkChannel: 'whatsapp_link',
+        meetingLinkSentUrl: consultation.meetingUrl,
+        meetingLinkSentAt: new Date(),
+        meetingLinkError: null,
+      },
+    });
+    return res.json(await loadFull(id));
   } catch (error) {
     return sendError(res, next, error);
   }
@@ -868,16 +942,15 @@ router.put('/:id/reschedule', auth, async (req, res, next) => {
           date: target.startAt,
           time: target.startAt.toISOString().slice(11, 16),
           status: 'CHANGED',
-          // الرابط القديم كان لموعد سابق. meetingEventId يبقى حتى نحذف
-          // اجتماعه من Google (releaseMeeting أدناه).
-          meetingUrl: null,
+          // رابط Meet اليدوي يبقى صالحًا، لكن الموعد تغيّر: يجب إعادة إرساله للمريض
+          meetingLinkStatus: null,
+          meetingLinkSentAt: null,
+          meetingLinkSentUrl: null,
+          meetingLinkError: null,
         },
       });
     });
 
-    // احذف اجتماع الموعد القديم (مع إشعار إلغاء)، ثم أنشئ اجتماعًا للموعد الجديد
-    await releaseMeeting(updated.id, 'rescheduled');
-    await ensureMeeting(updated.id);
     return res.json(await prisma.consultation.findUnique({ where: { id: updated.id }, include: consultationInclude }));
   } catch (error) {
     return sendError(res, next, error);

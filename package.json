@@ -8,7 +8,6 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "seed": "node prisma/seed.js",
-    "google:token": "node scripts/google-meet-token.js",
     "test": "node --test"
   },
   "dependencies": {
