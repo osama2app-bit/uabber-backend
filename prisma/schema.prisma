@@ -433,3 +433,17 @@ model AppleSpecialistPurchase {
 
   @@index([userId])
 }
+
+// اجتماعات Google Meet فشل حذفها (لإعادة المحاولة لاحقًا بدل فقدان معرّفها)
+model PendingMeetingDeletion {
+  id             Int      @id @default(autoincrement())
+  eventId        String   @unique
+  consultationId Int?
+  reason         String
+  attempts       Int      @default(1)
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([createdAt])
+}
