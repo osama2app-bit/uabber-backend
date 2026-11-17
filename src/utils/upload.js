@@ -14,6 +14,62 @@ function makeUpload(folder, fieldName) {
   }).single(fieldName);
 }
 
+// أنواع وأحجام الملفات المسموحة لرفع الوسائط (صور القصص وتسجيلاتها)
+const MEDIA_RULES = {
+  image: {
+    maxBytes: 5 * 1024 * 1024,
+    mimes: /^image\/(jpeg|png|webp|gif|heic|heif)$/i,
+    exts: /\.(jpe?g|png|webp|gif|heic|heif)$/i,
+    label: 'الصورة (JPG/PNG/WEBP حتى 5MB)',
+  },
+  audio: {
+    maxBytes: 15 * 1024 * 1024,
+    mimes: /^audio\/(mpeg|mp3|mp4|m4a|x-m4a|aac|wav|x-wav|wave|ogg|webm|3gpp)$/i,
+    exts: /\.(mp3|m4a|aac|wav|ogg|webm|3gp)$/i,
+    label: 'التسجيل الصوتي (MP3/M4A/WAV حتى 15MB)',
+  },
+};
+
+class UploadError extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 400;
+  }
+}
+
+/**
+ * رفع ملفات وسائط بأسماء حقول محددة مع التحقق من النوع والحجم.
+ * fields: { image: 'image' | 'audio', audio: 'audio' } (اسم الحقل ← نوعه)
+ */
+function makeMediaUpload(fields) {
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MEDIA_RULES.audio.maxBytes, files: Object.keys(fields).length },
+    fileFilter: (_req, file, cb) => {
+      const rule = MEDIA_RULES[fields[file.fieldname]];
+      if (!rule) return cb(new UploadError('حقل ملف غير متوقع'));
+      const ok = rule.mimes.test(file.mimetype || '') || rule.exts.test(file.originalname || '');
+      return ok ? cb(null, true) : cb(new UploadError(`نوع الملف غير مدعوم: ${rule.label}`));
+    },
+  }).fields(Object.keys(fields).map((name) => ({ name, maxCount: 1 })));
+
+  return (req, res, next) =>
+    upload(req, res, (error) => {
+      if (error) {
+        const message =
+          error.code === 'LIMIT_FILE_SIZE' ? 'حجم الملف كبير جدًا' : error.message || 'تعذر رفع الملف';
+        return res.status(400).json({ message });
+      }
+      for (const [name, kind] of Object.entries(fields)) {
+        const file = req.files?.[name]?.[0];
+        if (file && file.size > MEDIA_RULES[kind].maxBytes) {
+          return res.status(400).json({ message: `حجم الملف كبير جدًا: ${MEDIA_RULES[kind].label}` });
+        }
+      }
+      return next();
+    });
+}
+
 // صيغ صوتية لا تعمل على iPhone (أو بعض أجهزة Android): نحوّلها إلى mp3.
 const UNSAFE_AUDIO = /(ogg|opus|webm|amr|3gpp|3gp|x-ms-wma|wma|flac)/i;
 
@@ -80,6 +136,8 @@ async function fileUrl(req, folder, file) {
 }
 
 module.exports = {
+  makeMediaUpload,
+  MEDIA_RULES,
   isCloudinaryConfigured,
   isAudio,
   makeUpload,

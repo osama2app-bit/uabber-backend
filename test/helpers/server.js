@@ -21,6 +21,7 @@ async function startServer(env = {}) {
     await wait(200);
   }
   const call = async (method, url, token, body) => {
+    if (method === 'GET' || method === 'HEAD') body = undefined;
     const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
     const response = await fetch(`${base}${url}`, {
       method,
