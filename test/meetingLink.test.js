@@ -71,6 +71,6 @@ test('لا يوجد أي استدعاء لـ Google Calendar API في كود ا�
   walk(path.join(__dirname, '..', 'src'));
   for (const file of files) {
     const code = fs.readFileSync(file, 'utf8');
-    assert.doesNotMatch(code, /googleapis\.com\/calendar|oauth2\.googleapis\.com|GOOGLE_REFRESH_TOKEN|GOOGLE_CLIENT_SECRET/, file);
+    assert.doesNotMatch(code, /googleapis\.com\/calendar|calendar\/v3|GOOGLE_REFRESH_TOKEN|GOOGLE_CLIENT_SECRET/, file);
   }
 });
