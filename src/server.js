@@ -22,6 +22,9 @@ app.use('/api/settings',settingsRouter);
 app.use('/api/subscriptions',require('./routes/apple-iap.routes'));
 app.use('/api/subscriptions',require('./routes/subscriptions.routes'));
 app.use('/api/consultations',require('./routes/consultations.routes'));
+app.use('/api/schedules',require('./routes/schedules.routes'));
+app.use('/api/notifications',require('./routes/user-notifications.routes'));
+app.use('/api/stories',require('./routes/stories.routes'));
 app.use('/api/specialists',require('./routes/specialists.routes').router);
 app.use('/api/journey-steps',require('./routes/journey.routes'));
 app.use('/api/event-sequences',require('./routes/event-sequences.routes'));
@@ -33,3 +36,7 @@ app.use('/api/admin',require('./routes/admin.routes'));
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({message:'Server error'});});
 const port=process.env.PORT||4000;
 app.listen(port,()=>console.log(`Uabber API running on http://localhost:${port}`));
+// مهام الخلفية: توليد مواعيد الجداول، والإشعارات المجدولة
+require('./jobs/scheduler').startJobs();
+// نقل نصوص القصص المعدّلة سابقًا (مرة واحدة)
+require('./routes/stories.routes').importLegacyStoryText().catch((e)=>console.error('STORIES IMPORT FAILED:',e.message));

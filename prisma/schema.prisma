@@ -18,6 +18,15 @@ enum RequestStatus {
   REJECTED
 }
 
+// حالة موعد الأخصائي
+enum SlotStatus {
+  AVAILABLE
+  BOOKED
+  COMPLETED
+  CANCELLED
+  UNAVAILABLE
+}
+
 enum ConsultationStatus {
   NEW
   PAYMENT_CONFIRMED
@@ -43,6 +52,8 @@ model User {
   updatedAt         DateTime  @updatedAt
 
   subscriptions              Subscription[]
+  deviceTokens               DeviceToken[]
+  userNotifications          UserNotification[]
   consultations              Consultation[]
   paymentRequests            PaymentRequest[]
   educationalContentUpdates  EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
@@ -148,18 +159,23 @@ model Subscription {
 }
 
 model SpecialistAvailability {
-  id                  Int      @id @default(autoincrement())
+  id                  Int        @id @default(autoincrement())
   specialist          String
   startAt             DateTime
   durationMinutes     Int
-  isAvailable         Boolean  @default(true)
+  isAvailable         Boolean    @default(true)
+  // الحالة التفصيلية (isAvailable = status == AVAILABLE، يبقى للتوافق)
+  status              SlotStatus @default(AVAILABLE)
+  // الموعد مولّد من جدول الدوام الأسبوعي (null = موعد يدوي)
+  scheduleId          Int?
   // الأخصائي صاحب الموعد (null = موعد قديم أضافه الأدمن)
   specialistProfileId Int?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
   consultations     Consultation[]
-  specialistProfile SpecialistProfile? @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
+  specialistProfile SpecialistProfile?  @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
+  schedule          SpecialistSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
 
   @@unique([specialistProfileId, startAt])
   @@index([isAvailable, startAt])
@@ -424,6 +440,7 @@ model SpecialistProfile {
   user          User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   slots         SpecialistAvailability[]
   consultations Consultation[]
+  schedule      SpecialistSchedule?
 
   @@index([status, specialty])
 }
@@ -456,4 +473,101 @@ model PendingMeetingDeletion {
   updatedAt      DateTime @updatedAt
 
   @@index([createdAt])
+}
+
+// جدول الدوام الأسبوعي الثابت للأخصائي — تُولَّد منه المواعيد تلقائيًا
+model SpecialistSchedule {
+  id                  Int       @id @default(autoincrement())
+  specialistProfileId Int       @unique
+  // أيام الدوام: 0 = الأحد ... 6 = السبت
+  weekdays            Int[]
+  // بداية ونهاية الدوام بالدقائق من منتصف الليل (بتوقيت timeZone)
+  startMinutes        Int
+  endMinutes          Int
+  sessionMinutes      Int
+  breakMinutes        Int       @default(0)
+  maxSessionsPerDay   Int
+  timeZone            String    @default("Asia/Amman")
+  // فترة توليد المواعيد (لا تتجاوز مدة اشتراك الأخصائي)
+  validFrom           DateTime?
+  validUntil          DateTime?
+  isActive            Boolean   @default(true)
+  lastGeneratedAt     DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  specialistProfile SpecialistProfile        @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
+  slots             SpecialistAvailability[]
+}
+
+// أجهزة المستخدمين لإشعارات الدفع (FCM: Android وiOS)
+model DeviceToken {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  token      String   @unique
+  platform   String // android | ios | web
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// سجل إشعارات المستخدمين (فورية ومجدولة) مع منع التكرار وإعادة المحاولة
+model UserNotification {
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  type           String // booking_new | booking_confirmed | booking_cancelled | booking_changed | reminder
+  title          String
+  body           String
+  data           Json?
+  consultationId Int?
+  // مفتاح فريد يمنع إنشاء نفس الإشعار مرتين
+  dedupeKey      String    @unique
+  scheduledAt    DateTime  @default(now())
+  // PENDING | SENDING | SENT | FAILED | CANCELLED | SKIPPED
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  lastError      String?
+  sentAt         DateTime?
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+  @@index([userId, createdAt])
+  @@index([consultationId])
+}
+
+// حالة القصة: مسودة / منشورة / مخفية / مؤرشفة — المنشورة فقط تظهر للمستخدمين
+enum StoryStatus {
+  DRAFT
+  PUBLISHED
+  HIDDEN
+  ARCHIVED
+}
+
+// القصص التعليمية (يديرها الأدمن، بدون بيانات ثابتة في التطبيق)
+model Story {
+  id               Int         @id @default(autoincrement())
+  title            String
+  text             String
+  // الكلمة المستهدفة في القصة (كلمة اليوم)
+  word             String?
+  emoji            String?
+  imageUrl         String?
+  audioUrl         String?
+  audioDurationSec Int?
+  sortOrder        Int         @default(0)
+  status           StoryStatus @default(DRAFT)
+  // معرّف القصص القديمة (لربط تعديلات المستخدمين السابقة)
+  legacyKey        String?     @unique
+  publishedAt      DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@index([status, sortOrder])
 }
