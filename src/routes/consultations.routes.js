@@ -5,6 +5,7 @@ const { makeUpload, fileUrl } = require('../utils/upload');
 const { SPECIALTIES, isBookable } = require('./specialists.routes');
 const { normalizeMeetUrl, whatsappPhone, formatSessionDate, buildMeetingMessage } = require('../utils/meetingLink');
 const whatsapp = require('../services/whatsapp');
+const { checkAgainstSchedule } = require('../services/schedule');
 
 const router = express.Router();
 
@@ -187,6 +188,7 @@ router.get('/availability', auth, async (req, res, next) => {
     const slots = await prisma.specialistAvailability.findMany({
       where: {
         isAvailable: true,
+        status: 'AVAILABLE',
         startAt: { gt: now },
         ...(requestedSpecialist ? { specialist: requestedSpecialist } : {}),
         ...(specialistProfileId
@@ -300,6 +302,11 @@ router.post('/availability', auth, async (req, res, next) => {
       if (overlap) {
         return res.status(409).json({ message: 'يوجد موعد آخر متداخل مع هذا الوقت' });
       }
+      // إن كان للأخصائي جدول دوام: الموعد اليدوي يلتزم بساعات الدوام والحد اليومي
+      if (owner.profileId) {
+        const problem = await checkAgainstSchedule(prisma, owner.profileId, startAt, durationMinutes);
+        if (problem) return res.status(400).json({ message: problem });
+      }
       const slot = await prisma.specialistAvailability.create({
         data: {
           specialist: owner.specialist,
@@ -307,6 +314,7 @@ router.post('/availability', auth, async (req, res, next) => {
           startAt,
           durationMinutes,
           isAvailable: req.body.isAvailable !== false,
+          status: req.body.isAvailable === false ? 'UNAVAILABLE' : 'AVAILABLE',
         },
       });
       return res.status(201).json(slot);
@@ -438,8 +446,25 @@ router.put('/availability/:id', auth, async (req, res, next) => {
       }
       data.startAt = startAt;
     }
-    if (req.body.isAvailable !== undefined) {
-      data.isAvailable = Boolean(req.body.isAvailable);
+    // الحالة: متاح / غير متاح / ملغى — فقط لموعد غير محجوز
+    let nextStatus = null;
+    if (req.body.status !== undefined) {
+      nextStatus = String(req.body.status).toUpperCase();
+      if (!['AVAILABLE', 'UNAVAILABLE', 'CANCELLED'].includes(nextStatus)) {
+        return res.status(400).json({ message: 'حالة الموعد غير صالحة' });
+      }
+    } else if (req.body.isAvailable !== undefined) {
+      nextStatus = req.body.isAvailable ? 'AVAILABLE' : 'UNAVAILABLE';
+    }
+    if (nextStatus) {
+      if (['BOOKED', 'COMPLETED'].includes(current.status)) {
+        return res.status(409).json({ message: 'لا يمكن تغيير حالة موعد محجوز أو مكتمل' });
+      }
+      if (nextStatus === 'AVAILABLE' && current.startAt <= new Date()) {
+        return res.status(400).json({ message: 'لا يمكن إتاحة موعد في الماضي' });
+      }
+      data.status = nextStatus;
+      data.isAvailable = nextStatus === 'AVAILABLE';
     }
 
     const slot = await prisma.specialistAvailability.update({ where: { id }, data });
@@ -585,7 +610,7 @@ router.post('/', auth, makeUpload('consultation-receipts', 'receipt'), async (re
         include: { specialistProfile: true },
       });
 
-      if (!slot || !slot.isAvailable || slot.startAt <= new Date()) {
+      if (!slot || !slot.isAvailable || slot.status !== 'AVAILABLE' || slot.startAt <= new Date()) {
         throw new HttpError(409, 'عذرًا، هذا الموعد غير متاح. يرجى اختيار موعد مختلف.');
       }
       if (slot.specialistProfile && !isBookable(slot.specialistProfile)) {
@@ -596,8 +621,8 @@ router.post('/', auth, makeUpload('consultation-receipts', 'receipt'), async (re
       }
 
       const locked = await tx.specialistAvailability.updateMany({
-        where: { id: availabilityId, isAvailable: true },
-        data: { isAvailable: false },
+        where: { id: availabilityId, isAvailable: true, status: 'AVAILABLE', startAt: { gt: new Date() } },
+        data: { isAvailable: false, status: 'BOOKED' },
       });
       if (locked.count !== 1) {
         throw new HttpError(409, 'عذرًا، تم حجز هذا الموعد من عميل آخر. يرجى اختيار موعد مختلف.');
@@ -695,9 +720,17 @@ router.put('/:id/status', auth, async (req, res, next) => {
       });
 
       if (reusableStatuses.has(status) && existing.availabilityId) {
-        await tx.specialistAvailability.update({
+        // إلغاء/رفض الحجز يعيد الموعد متاحًا لنفس التاريخ (إن كان مستقبليًا)
+        const reopen = Boolean(existing.date && existing.date > new Date());
+        await tx.specialistAvailability.updateMany({
+          where: { id: existing.availabilityId, status: 'BOOKED' },
+          data: { isAvailable: reopen, status: reopen ? 'AVAILABLE' : 'CANCELLED' },
+        });
+      }
+      if (status === 'COMPLETED' && existing.availabilityId) {
+        await tx.specialistAvailability.updateMany({
           where: { id: existing.availabilityId },
-          data: { isAvailable: Boolean(existing.date && existing.date > new Date()) },
+          data: { isAvailable: false, status: 'COMPLETED' },
         });
       }
 
@@ -917,8 +950,8 @@ router.put('/:id/reschedule', auth, async (req, res, next) => {
       }
 
       const locked = await tx.specialistAvailability.updateMany({
-        where: { id: availabilityId, isAvailable: true, startAt: { gt: new Date() } },
-        data: { isAvailable: false },
+        where: { id: availabilityId, isAvailable: true, status: 'AVAILABLE', startAt: { gt: new Date() } },
+        data: { isAvailable: false, status: 'BOOKED' },
       });
       if (locked.count !== 1) {
         throw new HttpError(409, 'الموعد الجديد غير متاح، اختر موعدًا آخر');
@@ -929,7 +962,10 @@ router.put('/:id/reschedule', auth, async (req, res, next) => {
         if (old) {
           await tx.specialistAvailability.update({
             where: { id: old.id },
-            data: { isAvailable: old.startAt > new Date() },
+            data: {
+              isAvailable: old.startAt > new Date(),
+              status: old.startAt > new Date() ? 'AVAILABLE' : 'CANCELLED',
+            },
           });
         }
       }

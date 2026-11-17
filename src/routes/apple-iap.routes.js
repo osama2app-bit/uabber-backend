@@ -4,6 +4,7 @@ const prisma = require('../config/prisma');
 const { auth } = require('../middleware/auth');
 const { addPlanDuration } = require('./subscriptions.routes');
 const { ownProfile } = require('./specialists.routes');
+const { syncScheduleSlots } = require('../services/schedule');
 const {
   isKnownProduct,
   planForProduct,
@@ -160,6 +161,9 @@ async function verifySpecialist(req, res, { receipt, productId, transactionId })
     });
   });
 
+  await syncScheduleSlots(prisma, result.id).catch((e) =>
+    console.error('SCHEDULE SYNC AFTER APPLE RENEWAL FAILED:', e.message)
+  );
   return res.json({
     specialist: true,
     source: 'apple',

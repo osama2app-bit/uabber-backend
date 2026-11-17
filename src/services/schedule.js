@@ -287,6 +287,34 @@ async function syncAllSchedules(prisma, now = new Date()) {
   return { schedules: schedules.length, created };
 }
 
+/**
+ * يتحقق أن موعدًا يدويًا يلتزم بجدول الدوام الفعّال (اليوم، الساعات، الحد اليومي).
+ * يعيد رسالة خطأ أو null.
+ */
+async function checkAgainstSchedule(prisma, profileId, startAt, durationMinutes) {
+  const schedule = await prisma.specialistSchedule.findUnique({ where: { specialistProfileId: profileId } });
+  if (!schedule || !schedule.isActive) return null;
+  const tz = schedule.timeZone || DEFAULT_TZ;
+  const p = zoneParts(startAt, tz);
+  const day = { year: p.year, month: p.month, day: p.day };
+  if (!schedule.weekdays.includes(weekdayOf(day))) return 'هذا اليوم ليس من أيام الدوام في جدولك';
+  const minutes = p.hour * 60 + p.minute;
+  if (minutes < schedule.startMinutes || minutes + durationMinutes > schedule.endMinutes) {
+    return 'الموعد خارج ساعات الدوام في جدولك';
+  }
+  const dayStart = zonedTimeToUtc(day, 0, tz);
+  const dayEnd = zonedTimeToUtc(addDays(day, 1), 0, tz);
+  const count = await prisma.specialistAvailability.count({
+    where: {
+      specialistProfileId: profileId,
+      status: { not: 'CANCELLED' },
+      startAt: { gte: dayStart, lt: dayEnd },
+    },
+  });
+  if (count >= schedule.maxSessionsPerDay) return 'تم الوصول للحد الأقصى للجلسات في هذا اليوم';
+  return null;
+}
+
 /** الجدول كما يُرسل للتطبيق. */
 function presentSchedule(s) {
   if (!s) return null;
@@ -320,4 +348,5 @@ module.exports = {
   syncScheduleSlots,
   syncAllSchedules,
   presentSchedule,
+  checkAgainstSchedule,
 };

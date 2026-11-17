@@ -49,11 +49,38 @@ function uploadToCloudinary(file, folder = 'uabber') {
   });
 }
 
+function isCloudinaryConfigured() {
+  return Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET
+  );
+}
+
+/**
+ * بدون Cloudinary (تطوير/اختبار فقط): حفظ الملف في مجلد uploads المحلي.
+ * في الإنتاج تُستخدم Cloudinary دائمًا.
+ */
+async function saveLocally(req, folder, file) {
+  const fs = require('fs/promises');
+  const path = require('path');
+  const crypto = require('crypto');
+  const ext = (path.extname(file.originalname || '') || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
+  const name = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`;
+  const dir = path.join(__dirname, '..', '..', 'uploads', folder);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, name), file.buffer);
+  return `${req.protocol}://${req.get('host')}/uploads/${folder}/${name}`;
+}
+
 async function fileUrl(req, folder, file) {
+  if (!file) return null;
+  if (!isCloudinaryConfigured() && process.env.NODE_ENV !== 'production') {
+    return saveLocally(req, folder, file);
+  }
   return uploadToCloudinary(file, folder);
 }
 
 module.exports = {
+  isCloudinaryConfigured,
   isAudio,
   makeUpload,
   fileUrl,

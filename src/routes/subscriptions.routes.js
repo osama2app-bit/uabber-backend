@@ -3,6 +3,7 @@ const prisma = require('../config/prisma');
 const { auth, adminOnly } = require('../middleware/auth');
 const { makeUpload, fileUrl } = require('../utils/upload');
 const { refreshAppleSubscriptions } = require('../services/appleIap');
+const { syncScheduleSlots } = require('../services/schedule');
 
 const router = express.Router();
 
@@ -792,6 +793,13 @@ router.post(
             };
           }
         );
+
+      // تمديد اشتراك أخصائي: توليد مواعيد جدوله للفترة الجديدة
+      if (result.specialist && result.specialistProfile?.id) {
+        await syncScheduleSlots(prisma, result.specialistProfile.id).catch((e) =>
+          console.error('SCHEDULE SYNC AFTER RENEWAL FAILED:', e.message)
+        );
+      }
 
       return res.json({
         ok: true,
