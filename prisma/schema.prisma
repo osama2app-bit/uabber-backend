@@ -18,6 +18,15 @@ enum RequestStatus {
   REJECTED
 }
 
+// حالة موعد الأخصائي
+enum SlotStatus {
+  AVAILABLE
+  BOOKED
+  COMPLETED
+  CANCELLED
+  UNAVAILABLE
+}
+
 enum ConsultationStatus {
   NEW
   PAYMENT_CONFIRMED
@@ -148,18 +157,23 @@ model Subscription {
 }
 
 model SpecialistAvailability {
-  id                  Int      @id @default(autoincrement())
+  id                  Int        @id @default(autoincrement())
   specialist          String
   startAt             DateTime
   durationMinutes     Int
-  isAvailable         Boolean  @default(true)
+  isAvailable         Boolean    @default(true)
+  // الحالة التفصيلية (isAvailable = status == AVAILABLE، يبقى للتوافق)
+  status              SlotStatus @default(AVAILABLE)
+  // الموعد مولّد من جدول الدوام الأسبوعي (null = موعد يدوي)
+  scheduleId          Int?
   // الأخصائي صاحب الموعد (null = موعد قديم أضافه الأدمن)
   specialistProfileId Int?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
   consultations     Consultation[]
-  specialistProfile SpecialistProfile? @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
+  specialistProfile SpecialistProfile?  @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
+  schedule          SpecialistSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
 
   @@unique([specialistProfileId, startAt])
   @@index([isAvailable, startAt])
@@ -424,6 +438,7 @@ model SpecialistProfile {
   user          User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   slots         SpecialistAvailability[]
   consultations Consultation[]
+  schedule      SpecialistSchedule?
 
   @@index([status, specialty])
 }
@@ -456,4 +471,29 @@ model PendingMeetingDeletion {
   updatedAt      DateTime @updatedAt
 
   @@index([createdAt])
+}
+
+// جدول الدوام الأسبوعي الثابت للأخصائي — تُولَّد منه المواعيد تلقائيًا
+model SpecialistSchedule {
+  id                  Int       @id @default(autoincrement())
+  specialistProfileId Int       @unique
+  // أيام الدوام: 0 = الأحد ... 6 = السبت
+  weekdays            Int[]
+  // بداية ونهاية الدوام بالدقائق من منتصف الليل (بتوقيت timeZone)
+  startMinutes        Int
+  endMinutes          Int
+  sessionMinutes      Int
+  breakMinutes        Int       @default(0)
+  maxSessionsPerDay   Int
+  timeZone            String    @default("Asia/Amman")
+  // فترة توليد المواعيد (لا تتجاوز مدة اشتراك الأخصائي)
+  validFrom           DateTime?
+  validUntil          DateTime?
+  isActive            Boolean   @default(true)
+  lastGeneratedAt     DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  specialistProfile SpecialistProfile        @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
+  slots             SpecialistAvailability[]
 }
