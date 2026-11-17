@@ -52,6 +52,8 @@ model User {
   updatedAt         DateTime  @updatedAt
 
   subscriptions              Subscription[]
+  deviceTokens               DeviceToken[]
+  userNotifications          UserNotification[]
   consultations              Consultation[]
   paymentRequests            PaymentRequest[]
   educationalContentUpdates  EducationalContentOverride[] @relation("EducationalContentUpdatedBy")
@@ -496,4 +498,46 @@ model SpecialistSchedule {
 
   specialistProfile SpecialistProfile        @relation(fields: [specialistProfileId], references: [id], onDelete: Cascade)
   slots             SpecialistAvailability[]
+}
+
+// أجهزة المستخدمين لإشعارات الدفع (FCM: Android وiOS)
+model DeviceToken {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  token      String   @unique
+  platform   String // android | ios | web
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// سجل إشعارات المستخدمين (فورية ومجدولة) مع منع التكرار وإعادة المحاولة
+model UserNotification {
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  type           String // booking_new | booking_confirmed | booking_cancelled | booking_changed | reminder
+  title          String
+  body           String
+  data           Json?
+  consultationId Int?
+  // مفتاح فريد يمنع إنشاء نفس الإشعار مرتين
+  dedupeKey      String    @unique
+  scheduledAt    DateTime  @default(now())
+  // PENDING | SENDING | SENT | FAILED | CANCELLED | SKIPPED
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  lastError      String?
+  sentAt         DateTime?
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+  @@index([userId, createdAt])
+  @@index([consultationId])
 }

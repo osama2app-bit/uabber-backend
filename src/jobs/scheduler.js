@@ -4,6 +4,7 @@
 // تُعطّل بـ JOBS_DISABLED=1 (مثلًا في الاختبارات).
 const prisma = require('../config/prisma');
 const { syncAllSchedules } = require('../services/schedule');
+const notifications = require('../services/notifications');
 
 const jobs = [];
 
@@ -33,6 +34,8 @@ function register(name, ms, fn) {
 
 function startJobs() {
   register('schedules', Number(process.env.SCHEDULE_SYNC_MS || 60 * 60 * 1000), () => syncAllSchedules(prisma));
+  // الإشعارات المستحقة (التذكير قبل الموعد بخمس دقائق يُرسل في وقته ±30 ثانية)
+  register('notifications', Number(process.env.NOTIFICATIONS_TICK_MS || 30 * 1000), () => notifications.processDue());
   return jobs;
 }
 

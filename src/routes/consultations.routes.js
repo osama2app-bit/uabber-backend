@@ -6,6 +6,7 @@ const { SPECIALTIES, isBookable } = require('./specialists.routes');
 const { normalizeMeetUrl, whatsappPhone, formatSessionDate, buildMeetingMessage } = require('../utils/meetingLink');
 const whatsapp = require('../services/whatsapp');
 const { checkAgainstSchedule } = require('../services/schedule');
+const notify = require('../services/notifications');
 
 const router = express.Router();
 
@@ -661,6 +662,7 @@ router.post('/', auth, makeUpload('consultation-receipts', 'receipt'), async (re
       return created;
     });
 
+    await notify.onBookingCreated(consultation.id);
     return res.status(201).json(consultation);
   } catch (error) {
     return sendError(res, next, error);
@@ -741,6 +743,8 @@ router.put('/:id/status', auth, async (req, res, next) => {
     });
 
     // لا إنشاء/حذف اجتماعات تلقائيًا: رابط الاجتماع اليدوي يبقى كما هو.
+    // الإشعارات: تأكيد فوري + تذكير قبل الموعد بخمس دقائق، أو إلغاء التذكير.
+    await notify.onStatusChanged(id, status);
     return res.json(await prisma.consultation.findUnique({ where: { id: updated.id }, include: consultationInclude }));
   } catch (error) {
     return sendError(res, next, error);
@@ -987,6 +991,7 @@ router.put('/:id/reschedule', auth, async (req, res, next) => {
       });
     });
 
+    await notify.onRescheduled(updated.id);
     return res.json(await prisma.consultation.findUnique({ where: { id: updated.id }, include: consultationInclude }));
   } catch (error) {
     return sendError(res, next, error);

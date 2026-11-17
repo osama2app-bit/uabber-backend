@@ -23,6 +23,7 @@ app.use('/api/subscriptions',require('./routes/apple-iap.routes'));
 app.use('/api/subscriptions',require('./routes/subscriptions.routes'));
 app.use('/api/consultations',require('./routes/consultations.routes'));
 app.use('/api/schedules',require('./routes/schedules.routes'));
+app.use('/api/notifications',require('./routes/user-notifications.routes'));
 app.use('/api/specialists',require('./routes/specialists.routes').router);
 app.use('/api/journey-steps',require('./routes/journey.routes'));
 app.use('/api/event-sequences',require('./routes/event-sequences.routes'));
